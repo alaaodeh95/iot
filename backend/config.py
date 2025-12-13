@@ -8,7 +8,7 @@ class Config:
     """Main configuration class"""
     
     # Server Configuration
-    CONTROLLER_HOST = os.getenv('CONTROLLER_HOST', '0.0.0.0')
+    CONTROLLER_HOST = os.getenv('CONTROLLER_HOST', 'localhost')
     CONTROLLER_PORT = int(os.getenv('CONTROLLER_PORT', 5000))
     
     # MongoDB Configuration
@@ -16,7 +16,7 @@ class Config:
     MONGODB_DATABASE = os.getenv('MONGODB_DATABASE', 'IOT')
     
     # Sensor Service Configuration
-    SENSOR_SERVICE_HOST = os.getenv('SENSOR_SERVICE_HOST', '0.0.0.0')
+    SENSOR_SERVICE_HOST = os.getenv('SENSOR_SERVICE_HOST', 'localhost')
     SENSOR_SERVICE_PORT = int(os.getenv('SENSOR_SERVICE_PORT', 5001))
     
     # Gateway Configuration
