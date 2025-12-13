@@ -5,14 +5,64 @@ import axios from 'axios';
 import type { ActuatorStatus, SystemStatus, DecisionLog, SensorConfig } from '../types';
 
 const API_BASE_URL = import.meta.env.VITE_API_URL || 'http://localhost:5000';
+const API_KEY = import.meta.env.VITE_API_KEY || 'iot-secure-api-key-2024';
+
+// Security configuration
+const securityConfig = {
+  apiKey: API_KEY,
+  enableHttps: import.meta.env.VITE_ENABLE_HTTPS === 'true',
+  socketAuth: import.meta.env.VITE_SOCKET_AUTH === 'true'
+};
 
 const api = axios.create({
   baseURL: API_BASE_URL,
-  timeout: 10000,
+  timeout: 15000,
   headers: {
-    'Content-Type': 'application/json'
+    'Content-Type': 'application/json',
+    'X-API-Key': securityConfig.apiKey,
+    'User-Agent': 'IoT-Dashboard/1.0'
   }
 });
+
+// Add request interceptor for security headers
+api.interceptors.request.use(
+  (config) => {
+    // Ensure API key is always included
+    if (!config.headers['X-API-Key']) {
+      config.headers['X-API-Key'] = securityConfig.apiKey;
+    }
+    
+    // Add timestamp for request tracking
+    config.headers['X-Request-Time'] = new Date().toISOString();
+    
+    console.log(`🔐 API Request: ${config.method?.toUpperCase()} ${config.url}`);
+    return config;
+  },
+  (error) => {
+    console.error('🚫 Request interceptor error:', error);
+    return Promise.reject(error);
+  }
+);
+
+// Add response interceptor for error handling
+api.interceptors.response.use(
+  (response) => {
+    console.log(`✅ API Response: ${response.status} ${response.config.url}`);
+    return response;
+  },
+  (error) => {
+    if (error.response?.status === 401) {
+      console.error('🔒 Authentication failed - check API key');
+      // Could trigger a re-authentication flow here
+    } else if (error.response?.status === 403) {
+      console.error('🚫 Access forbidden');
+    } else if (error.response?.status === 429) {
+      console.error('⏱️ Rate limited - too many requests');
+    }
+    console.error('❌ API Error:', error.response?.status, error.message);
+    return Promise.reject(error);
+  }
+);
 
 export const apiService = {
   /**

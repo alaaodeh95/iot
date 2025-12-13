@@ -7,17 +7,19 @@ import logging
 import time
 import threading
 import requests
-from typing import Dict, List
+from typing import Dict, List, Optional
 import xml.etree.ElementTree as ET
 from xml.dom import minidom
 import sys
 import os
+import random
 
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
 from backend.config import Config
 from sensors.sensor_simulator import SensorDevice
 from sensors.gateway import SensorGateway
+from backend.security import SecurityManager, RequestEncryption
 
 logging.basicConfig(
     level=getattr(logging, Config.LOG_LEVEL),
@@ -29,17 +31,28 @@ class SensorService:
     """Main sensor service coordinating all devices"""
     
     def __init__(self):
-        """Initialize sensor service"""
-        self.controller_url = f"http://{Config.CONTROLLER_HOST}:{Config.CONTROLLER_PORT}"
+        """Initialize secure sensor service"""
+        # Use HTTPS if SSL is enabled
+        protocol = "https" if Config.SSL_ENABLED else "http"
+        self.controller_url = f"{protocol}://{Config.CONTROLLER_HOST}:{Config.CONTROLLER_PORT}"
+        
         self.devices: Dict[str, SensorDevice] = {}
         self.gateway = SensorGateway(self.controller_url)
         self.running = False
         self.threads: List[threading.Thread] = []
         
+        # Initialize security components
+        self.security_manager = SecurityManager(Config)
+        self.device_tokens: Dict[str, str] = {}
+        self.encryption = RequestEncryption(Config.API_KEY)
+        
         # Initialize devices from config
         self._initialize_devices()
         
-        logger.info(f"Sensor service initialized with {len(self.devices)} devices")
+        # Authenticate all devices on startup
+        self._authenticate_devices()
+        
+        logger.info(f"Secure sensor service initialized with {len(self.devices)} devices")
     
     def _initialize_devices(self):
         """Initialize all sensor devices from configuration"""
@@ -73,10 +86,18 @@ class SensorService:
         
         logger.info(f"All {len(self.devices)} devices started")
         
-        # Keep main thread alive
+        # Keep main thread alive and refresh tokens periodically
         try:
+            token_refresh_counter = 0
             while self.running:
                 time.sleep(1)
+                token_refresh_counter += 1
+                
+                # Refresh tokens every hour (3600 seconds)
+                if token_refresh_counter >= 3600:
+                    self._refresh_device_tokens()
+                    token_refresh_counter = 0
+                    
         except KeyboardInterrupt:
             logger.info("Received shutdown signal")
             self.stop()
@@ -132,8 +153,75 @@ class SensorService:
         
         logger.info(f"Device {device_id} completed {cycle_count} cycles")
     
+    def _authenticate_devices(self):
+        """Authenticate all devices and obtain JWT tokens"""
+        logger.info("Authenticating devices...")
+        
+        for device_id in self.devices.keys():
+            try:
+                token = self._get_device_token(device_id)
+                if token:
+                    self.device_tokens[device_id] = token
+                    logger.info(f"Device {device_id} authenticated successfully")
+                else:
+                    logger.error(f"Failed to authenticate device {device_id}")
+            except Exception as e:
+                logger.error(f"Authentication error for device {device_id}: {e}")
+    
+    def _get_device_token(self, device_id: str) -> Optional[str]:
+        """Get JWT token for a specific device"""
+        try:
+            headers = {
+                'Content-Type': 'application/json',
+                'X-API-Key': Config.API_KEY
+            }
+            
+            response = requests.post(
+                f"{self.controller_url}/api/device/token",
+                json={'device_id': device_id},
+                headers=headers,
+                timeout=10,
+                verify=True if Config.SSL_ENABLED else False
+            )
+            
+            if response.status_code == 200:
+                return response.json().get('token')
+            else:
+                logger.error(f"Token request failed: {response.status_code}")
+                return None
+                
+        except Exception as e:
+            logger.error(f"Error getting token for {device_id}: {e}")
+            return None
+    
+    def _refresh_device_tokens(self):
+        """Refresh JWT tokens for all devices"""
+        logger.info("Refreshing device tokens...")
+        self._authenticate_devices()
+    
+    def _create_secure_headers(self, device_id: str, data: Dict) -> Dict[str, str]:
+        """Create secure headers for API requests"""
+        headers = {
+            'Content-Type': 'application/json',
+            'User-Agent': f'IoT-Device/{device_id}'
+        }
+        
+        # Add JWT token
+        if device_id in self.device_tokens:
+            headers['Authorization'] = f'Bearer {self.device_tokens[device_id]}'
+        
+        # Add request signature if enabled
+        if Config.ENABLE_REQUEST_SIGNING:
+            try:
+                signature = self.security_manager.sign_request(data, device_id)
+                headers['X-Signature'] = signature
+            except Exception as e:
+                logger.error(f"Error signing request for {device_id}: {e}")
+        
+        return headers
+    
     def _send_json_data(self, sensor_data: Dict, use_gateway: bool):
-        """Send sensor data in JSON format"""
+        """Send sensor data in JSON format with security"""
         device_id = sensor_data['device_id']
         
         try:
@@ -142,15 +230,25 @@ class SensorService:
                 result = self.gateway.process_sensor_data(sensor_data)
                 if result['status'] == 'success':
                     logger.debug(
-                        f"JSON data from {device_id} sent via gateway "
+                        f"Secure JSON data from {device_id} sent via gateway "
                         f"(outliers filtered: {result.get('outliers_filtered', 0)})"
                     )
             else:
-                # Send directly to controller
+                # Encrypt sensitive data if needed
+                secure_data = sensor_data.copy()
+                if hasattr(Config, 'ENABLE_DATA_ENCRYPTION') and Config.ENABLE_DATA_ENCRYPTION:
+                    secure_data = self.encryption.encrypt_sensor_data(secure_data)
+                
+                # Create secure headers
+                headers = self._create_secure_headers(device_id, secure_data)
+                
+                # Send directly to controller with authentication
                 response = requests.post(
                     f"{self.controller_url}/api/sensor-data",
-                    json=sensor_data,
-                    timeout=5
+                    json=secure_data,
+                    headers=headers,
+                    timeout=10,
+                    verify=True if Config.SSL_ENABLED else False
                 )
                 
                 if response.status_code == 200:

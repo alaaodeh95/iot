@@ -18,6 +18,10 @@ sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '../.
 from backend.config import Config
 from backend.controller.database import DatabaseManager
 from backend.controller.decision_engine import DecisionEngine
+from backend.security import (
+    SecurityManager, require_api_key, require_device_auth, 
+    require_gateway_auth, add_security_headers, RequestEncryption
+)
 from backend.models import (
     SensorReading, SensorGroup, ActuatorCommand, 
     ActuatorStatus, DecisionLog
@@ -32,11 +36,21 @@ logger = logging.getLogger(__name__)
 
 # Initialize Flask app
 app = Flask(__name__)
-app.config['SECRET_KEY'] = 'iot-smart-home-secret-key'
+app.config['SECRET_KEY'] = Config.JWT_SECRET_KEY
 CORS(app, resources={r"/*": {"origins": Config.CORS_ORIGINS}})
 
-# Initialize SocketIO
+# Initialize SocketIO with authentication
 socketio = SocketIO(app, cors_allowed_origins=Config.CORS_ORIGINS)
+
+# Initialize security components
+security_manager = SecurityManager(Config)
+app.security_manager = security_manager
+request_encryption = RequestEncryption(Config.API_KEY)
+
+# Add security headers to all responses
+@app.after_request
+def after_request(response):
+    return add_security_headers(response)
 
 # Initialize components
 db = DatabaseManager(Config.MONGODB_URI, Config.MONGODB_DATABASE)
@@ -77,15 +91,24 @@ def index():
 
 
 @app.route('/api/sensor-data', methods=['POST'])
+@require_device_auth
 def receive_sensor_data_json():
-    """Receive sensor data in JSON format"""
+    """Receive sensor data in JSON format with authentication"""
     try:
         data = request.get_json()
         
         if not data:
             return jsonify({'error': 'No data provided'}), 400
         
-        logger.info(f"Received JSON sensor data from {data.get('device_id')}")
+        # Verify device_id matches token
+        if data.get('device_id') != request.device_id:
+            return jsonify({'error': 'Device ID mismatch'}), 403
+        
+        logger.info(f"Received authenticated JSON sensor data from {data.get('device_id')}")
+        
+        # Decrypt data if encrypted
+        if data.get('encrypted'):
+            data = request_encryption.decrypt_sensor_data(data)
         
         # Process sensor data
         result = process_sensor_data(data, format='json')
@@ -95,13 +118,79 @@ def receive_sensor_data_json():
             'device_id': data.get('device_id'),
             'location': data.get('location'),
             'readings': data.get('readings'),
-            'timestamp': datetime.utcnow().isoformat()
+            'timestamp': datetime.utcnow().isoformat(),
+            'authenticated': True
         })
         
         return jsonify(result), 200
         
     except Exception as e:
         logger.error(f"Error processing JSON sensor data: {e}", exc_info=True)
+        return jsonify({'error': str(e)}), 500
+
+
+@app.route('/api/sensor-data/gateway', methods=['POST'])
+@require_gateway_auth
+def receive_gateway_data():
+    """Receive sensor data from gateway with authentication"""
+    try:
+        data = request.get_json()
+        
+        if not data:
+            return jsonify({'error': 'No data provided'}), 400
+        
+        logger.info(f"Received gateway data from {data.get('device_id')} (gateway processed)")
+        
+        # Process gateway-filtered data
+        result = process_sensor_data(data, format='json')
+        
+        # Emit real-time update via WebSocket
+        socketio.emit('sensor_update', {
+            'device_id': data.get('device_id'),
+            'location': data.get('location'),
+            'readings': data.get('readings'),
+            'timestamp': datetime.utcnow().isoformat(),
+            'gateway_processed': True,
+            'gateway_stats': data.get('gateway_stats', {})
+        })
+        
+        return jsonify({
+            'status': 'success',
+            'readings_processed': len(data.get('readings', [])),
+            'gateway_stats': data.get('gateway_stats', {})
+        })
+        
+    except Exception as e:
+        logger.error(f"Error processing gateway data: {e}", exc_info=True)
+        return jsonify({'error': str(e)}), 500
+
+
+@app.route('/api/device/token', methods=['POST'])
+@require_api_key
+def generate_device_token():
+    """Generate JWT token for device authentication"""
+    try:
+        data = request.get_json()
+        device_id = data.get('device_id')
+        
+        if not device_id:
+            return jsonify({'error': 'Device ID required'}), 400
+        
+        if device_id not in Config.DEVICE_KEYS:
+            return jsonify({'error': 'Unknown device'}), 404
+        
+        token = security_manager.generate_device_token(device_id)
+        
+        logger.info(f"Generated token for device: {device_id}")
+        
+        return jsonify({
+            'token': token,
+            'device_id': device_id,
+            'expires_in': Config.JWT_EXPIRATION_HOURS * 3600  # seconds
+        })
+        
+    except Exception as e:
+        logger.error(f"Error generating device token: {e}", exc_info=True)
         return jsonify({'error': str(e)}), 500
 
 
@@ -276,6 +365,7 @@ def get_actuators():
 
 
 @app.route('/api/actuators/<actuator_id>', methods=['POST'])
+@require_api_key
 def control_actuator(actuator_id: str):
     """Manually control an actuator"""
     try:
@@ -309,6 +399,7 @@ def control_actuator(actuator_id: str):
 
 
 @app.route('/api/status', methods=['GET'])
+@require_api_key
 def get_system_status():
     """Get overall system status"""
     try:

@@ -14,13 +14,23 @@ import {
   Paper,
   Box,
   Chip,
-  Alert
+  Alert,
+  Tabs,
+  Tab
 } from '@mui/material';
-import { Home, WifiOff, Wifi } from '@mui/icons-material';
+import { 
+  Home, 
+  WifiOff, 
+  Wifi, 
+  Security as SecurityIcon,
+  Dashboard as DashboardIcon
+} from '@mui/icons-material';
 import SensorCard from './components/SensorCard';
+import SecurityStatus from './components/SecurityStatus';
 import ActuatorCard from './components/ActuatorCard';
 import { socketService } from './services/socket';
 import { apiService } from './services/api';
+import { securityService } from './services/security';
 import type { SensorData, ActuatorStatus, SystemStatus } from './types';
 
 const darkTheme = createTheme({
@@ -41,6 +51,8 @@ function App() {
   const [systemStatus, setSystemStatus] = useState<SystemStatus | null>(null);
   const [connected, setConnected] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [currentTab, setCurrentTab] = useState(0);
+  const [authError, setAuthError] = useState<string | null>(null);
 
   useEffect(() => {
     // Connect to WebSocket
@@ -76,19 +88,40 @@ function App() {
     socketService.on('sensor_update', handleSensorUpdate);
     socketService.on('actuator_update', handleActuatorUpdate);
 
-    // Initial data fetch
+    // Initial data fetch with security handling
     const fetchInitialData = async () => {
       try {
+        console.log('🚀 Starting secure data fetch...');
+        
         const [actuatorsData, statusData] = await Promise.all([
           apiService.getActuators(),
           apiService.getSystemStatus()
         ]);
+        
         setActuators(actuatorsData);
         setSystemStatus(statusData);
         setError(null);
-      } catch (err) {
-        console.error('Error fetching initial data:', err);
-        setError('Failed to connect to backend. Please ensure the controller is running.');
+        setAuthError(null);
+        
+        console.log('✅ Initial data loaded successfully');
+        
+      } catch (err: any) {
+        console.error('❌ Error fetching initial data:', err);
+        
+        if (err.response?.status === 401) {
+          const authMsg = 'Authentication failed. Please check your API key configuration.';
+          setAuthError(authMsg);
+          setError(authMsg);
+          securityService.handleAuthError(err);
+        } else if (err.response?.status === 403) {
+          const forbiddenMsg = 'Access denied. Check your permissions.';
+          setAuthError(forbiddenMsg);
+          setError(forbiddenMsg);
+        } else if (err.code === 'ECONNREFUSED') {
+          setError('Failed to connect to backend. Please ensure the controller is running.');
+        } else {
+          setError(`Connection error: ${err.message || 'Unknown error'}`);
+        }
       }
     };
 
@@ -164,15 +197,45 @@ function App() {
           </Toolbar>
         </AppBar>
 
+        {/* Navigation Tabs */}
+        <Paper sx={{ borderRadius: 0 }}>
+          <Tabs 
+            value={currentTab} 
+            onChange={(_, newValue) => setCurrentTab(newValue)}
+            centered
+            sx={{ borderBottom: 1, borderColor: 'divider' }}
+          >
+            <Tab icon={<DashboardIcon />} label="Dashboard" />
+            <Tab icon={<SecurityIcon />} label="Security" />
+          </Tabs>
+        </Paper>
+
         <Container maxWidth="xl" sx={{ mt: 4, mb: 4 }}>
-          {error && (
+          {/* Authentication Error Alert */}
+          {authError && (
+            <Alert severity="error" sx={{ mb: 3 }}>
+              <Typography variant="h6">Authentication Error</Typography>
+              {authError}
+              <Box sx={{ mt: 1 }}>
+                <Typography variant="body2">
+                  Check your <code>VITE_API_KEY</code> environment variable or switch to the Security tab for diagnostics.
+                </Typography>
+              </Box>
+            </Alert>
+          )}
+
+          {/* General Error Alert */}
+          {error && !authError && (
             <Alert severity="error" sx={{ mb: 3 }}>
               {error}
             </Alert>
           )}
 
-          {/* Sensors Section */}
-          <Paper elevation={3} sx={{ p: 3, mb: 4 }}>
+          {/* Dashboard Tab Content */}
+          {currentTab === 0 && (
+            <>
+              {/* Sensors Section */}
+              <Paper elevation={3} sx={{ p: 3, mb: 4 }}>
             <Typography variant="h5" gutterBottom sx={{ mb: 3 }}>
               📊 Live Sensors
             </Typography>
@@ -225,11 +288,63 @@ function App() {
               )}
             </Grid>
           </Paper>
+            </>
+          )}
+
+          {/* Security Tab Content */}
+          {currentTab === 1 && (
+            <>
+              <SecurityStatus />
+              
+              {/* Security Information */}
+              <Paper elevation={3} sx={{ p: 3, mt: 4 }}>
+                <Typography variant="h5" gutterBottom>
+                  🔒 Security Information
+                </Typography>
+                
+                <Grid container spacing={3}>
+                  <Grid item xs={12} md={6}>
+                    <Box>
+                      <Typography variant="h6" gutterBottom>
+                        API Configuration
+                      </Typography>
+                      <Typography variant="body2" color="text.secondary">
+                        Base URL: {import.meta.env.VITE_API_URL || 'http://localhost:5000'}
+                      </Typography>
+                      <Typography variant="body2" color="text.secondary">
+                        API Key: {securityService.getApiKey().slice(0, 12)}...
+                      </Typography>
+                      <Typography variant="body2" color="text.secondary">
+                        HTTPS: {securityService.shouldUseHttps() ? 'Enabled' : 'Disabled'}
+                      </Typography>
+                    </Box>
+                  </Grid>
+                  
+                  <Grid item xs={12} md={6}>
+                    <Box>
+                      <Typography variant="h6" gutterBottom>
+                        Environment Variables
+                      </Typography>
+                      <Typography variant="body2" color="text.secondary">
+                        Set <code>VITE_API_KEY</code> in your .env file
+                      </Typography>
+                      <Typography variant="body2" color="text.secondary">
+                        Set <code>VITE_API_URL</code> for custom backend URL
+                      </Typography>
+                      <Typography variant="body2" color="text.secondary">
+                        Set <code>VITE_ENABLE_HTTPS=true</code> for SSL
+                      </Typography>
+                    </Box>
+                  </Grid>
+                </Grid>
+              </Paper>
+            </>
+          )}
 
           {/* Footer */}
           <Box sx={{ mt: 4, textAlign: 'center' }}>
             <Typography variant="caption" color="text.secondary">
-              IoT Smart Home Simulation System | Real-time monitoring with JSON & XML support
+              IoT Smart Home Simulation System | Real-time monitoring with secure authentication
             </Typography>
           </Box>
         </Container>
