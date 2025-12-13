@@ -14,6 +14,7 @@ import os
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
 from backend.config import Config
+from backend.security import RequestEncryption
 
 logger = logging.getLogger(__name__)
 
@@ -21,13 +22,14 @@ class SensorGateway:
     """Gateway for filtering sensor data outliers"""
     
     def __init__(self, controller_url: str):
-        """Initialize gateway"""
+        """Initialize gateway with security"""
         self.controller_url = controller_url
         self.config = Config.OUTLIER_DETECTION
         self.sensor_windows = {}  # Store recent readings for each sensor
         self.statistics_log = []
+        self.encryption = RequestEncryption(Config.GATEWAY_API_KEY)
         
-        logger.info(f"Gateway initialized, forwarding to {controller_url}")
+        logger.info(f"Secure gateway initialized, forwarding to {controller_url}")
     
     def process_sensor_data(self, sensor_data: Dict[str, Any]) -> Dict[str, Any]:
         """
@@ -95,12 +97,25 @@ class SensorGateway:
             }
         }
         
-        # Forward to controller
+        # Forward to controller with security headers
         try:
+            # Prepare secure headers
+            headers = {
+                'Content-Type': 'application/json',
+                'X-Gateway-Key': Config.GATEWAY_API_KEY,
+                'User-Agent': 'IoT-Gateway/1.0'
+            }
+            
+            # Encrypt sensitive data if configured
+            if hasattr(Config, 'ENABLE_DATA_ENCRYPTION') and Config.ENABLE_DATA_ENCRYPTION:
+                forwarded_data = self.encryption.encrypt_sensor_data(forwarded_data)
+            
             response = requests.post(
-                f"{self.controller_url}/api/sensor-data",
+                f"{self.controller_url}/api/sensor-data/gateway",
                 json=forwarded_data,
-                timeout=5
+                headers=headers,
+                timeout=10,
+                verify=True  # Verify SSL certificates
             )
             
             if response.status_code == 200:

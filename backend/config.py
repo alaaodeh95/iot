@@ -2,6 +2,7 @@
 Configuration for IoT Smart Home System
 """
 import os
+import secrets
 from typing import Dict, Any
 
 class Config:
@@ -196,6 +197,48 @@ class Config:
     
     # CORS Configuration
     CORS_ORIGINS = os.getenv('CORS_ORIGINS', 'http://localhost:3000').split(',')
+    
+    # Security Configuration
+    # API Key for sensor authentication
+    API_KEY = os.getenv('IOT_API_KEY', 'iot-secure-api-key-2024')
+    
+    # JWT Configuration
+    JWT_SECRET_KEY = os.getenv('JWT_SECRET_KEY', secrets.token_urlsafe(32))
+    JWT_ALGORITHM = 'HS256'
+    JWT_EXPIRATION_HOURS = int(os.getenv('JWT_EXPIRATION_HOURS', 24))
+    
+    # Gateway Security
+    GATEWAY_API_KEY = os.getenv('GATEWAY_API_KEY', 'gateway-secure-key-2024')
+    
+    # Sensor Device Keys (unique per device)
+    DEVICE_KEYS = {
+        'roof_station': os.getenv('ROOF_STATION_KEY', 'roof-device-key-2024'),
+        'living_room': os.getenv('LIVING_ROOM_KEY', 'living-room-key-2024'),
+        'kitchen': os.getenv('KITCHEN_KEY', 'kitchen-device-key-2024'),
+        'dust_cleaner': os.getenv('DUST_CLEANER_KEY', 'dust-cleaner-key-2024'),
+        'bedroom': os.getenv('BEDROOM_KEY', 'bedroom-device-key-2024'),
+        'basement': os.getenv('BASEMENT_KEY', 'basement-device-key-2024'),
+        'entrance': os.getenv('ENTRANCE_KEY', 'entrance-device-key-2024')
+    }
+    
+    # SSL/TLS Configuration
+    SSL_ENABLED = os.getenv('SSL_ENABLED', 'false').lower() == 'true'
+    SSL_CERT_PATH = os.getenv('SSL_CERT_PATH', './certs/server.crt')
+    SSL_KEY_PATH = os.getenv('SSL_KEY_PATH', './certs/server.key')
+    
+    # Request signing for data integrity
+    ENABLE_REQUEST_SIGNING = os.getenv('ENABLE_REQUEST_SIGNING', 'true').lower() == 'true'
+    
+    # Rate limiting (requests per minute per device)
+    RATE_LIMIT_PER_MINUTE = int(os.getenv('RATE_LIMIT_PER_MINUTE', 60))
+    
+    # Security headers
+    SECURITY_HEADERS = {
+        'X-Content-Type-Options': 'nosniff',
+        'X-Frame-Options': 'DENY',
+        'X-XSS-Protection': '1; mode=block',
+        'Strict-Transport-Security': 'max-age=31536000; includeSubDomains'
+    }
     
     # Logging Configuration
     LOG_LEVEL = os.getenv('LOG_LEVEL', 'INFO')
