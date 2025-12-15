@@ -41,20 +41,11 @@ Implementation Notes:
 You may use Python, Java, or C++ for implementation.
 Make your code modular (separate classes for sensors, controller, actuators).
 Clearly print sensor readings, decisions, and actuator states at each step.
-Deliverables:
-
-Source code with clear documentation.
-A short report (2–3 pages) including:
-
-Description of your design (sensor types, rules, actuator roles).
-Example output logs.
-Reflection: how this models a real IoT system.
 
 Add the following to the main project:
 
 Since we have a set of sensors that send data to the main server, make one of these sensors send the data to a program that sends the data to the main server. That is, this new program represents a tier between the sensor and the main server (Gateway to filter outliers).
 
-Also consider this:
 With respect to the main project:
 
 Implemet both JSON and SOAP (XML format) to simulate sending data for both data representations and protocols.
@@ -62,3 +53,30 @@ Implemet both JSON and SOAP (XML format) to simulate sending data for both data 
 1- JSON: choose one of the sensors to send data using JSON format (for example a sensor that measures temperature, humedity and pressure. The sensor could be located on the roof of the house). These data are stored in a JSON format and sent as pairs of data to the main server).
 
 2- XML: Suppose the smart home has a dust cleaner that has a sensor and a camera that used to detect objects in a room. The sensor sends the main server the data: object distance, object name (after an image processing program recognized the object), and the strength of detection signal used by the cleaner. All data (text) sent to the main server using XML format.
+
+Objective:
+Following what you have developed in the first phase, the objective of this phase is
+involve data analytics for the data collected from the sensors in the developed IoT
+system. Furthermore, a proper Machine Learning (ML) model should be built and
+modified whenever needed. This ML model should guide the application control to
+make proper decisions (instead of having just rule-based decisions).
+Requirements:
+1. Modify the system you have implemented in phase#1 to perform the following:
+a. Include additional types of sensors (in the attached document).
+b. Designate one of the sensors to do initial filtration/processing before the
+data reaches the gateway. That is, this sensor represents a tier between the sensors
+and the gateway which, in turn, should send the data to the cloud.
+c. Write a program to convert the data stored in the data warehouse into a form
+that is ready to be further analyzed with descriptive analysis (Spreadsheet, visualized
+form, etc,.. )
+d. Perform proper prescriptive analysis to the data based on the resultant
+descriptive analysis. Build a Machine Learning (ML) model for your system based on
+the data. Be careful that this model should be modified whenever needed.
+e. Use the built ML model to help the control application making proper
+decisions so that proper commands are sent to the actuators (Prescriptive analysis).
+
+
+For sensors:
+check
+./sensors.pdf
+./sensors-sample data.pdf

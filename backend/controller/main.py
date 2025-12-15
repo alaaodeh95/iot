@@ -6,11 +6,17 @@ from flask import Flask, request, jsonify
 from flask_cors import CORS
 from flask_socketio import SocketIO, emit
 import logging
-from datetime import datetime
-from typing import Dict, Any, List
+from datetime import datetime, timedelta
+from typing import Dict, Any, List, Optional
 import uuid
 import sys
 import os
+import io
+import base64
+import threading
+import matplotlib
+matplotlib.use("Agg")
+import matplotlib.pyplot as plt
 
 # Add parent directory to path
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '../..')))
@@ -18,6 +24,7 @@ sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '../.
 from backend.config import Config
 from backend.controller.database import DatabaseManager
 from backend.controller.decision_engine import DecisionEngine
+from backend.controller.ml_model import MLModelManager
 from backend.security import (
     SecurityManager, require_api_key, require_device_auth, 
     require_gateway_auth, add_security_headers, RequestEncryption
@@ -55,6 +62,8 @@ def after_request(response):
 # Initialize components
 db = DatabaseManager(Config.MONGODB_URI, Config.MONGODB_DATABASE)
 decision_engine = DecisionEngine()
+ml_manager = MLModelManager(db)
+ml_scheduler: Optional[threading.Timer] = None
 
 # Store current actuator states
 actuator_states: Dict[str, ActuatorStatus] = {}
@@ -140,6 +149,17 @@ def receive_gateway_data():
             return jsonify({'error': 'No data provided'}), 400
         
         logger.info(f"Received gateway data from {data.get('device_id')} (gateway processed)")
+        
+        # Persist gateway log
+        db.store_gateway_log({
+            'device_id': data.get('device_id'),
+            'location': data.get('location'),
+            'timestamp': datetime.utcnow(),
+            'original_count': len(data.get('readings', [])) + data.get('gateway_stats', {}).get('outliers_removed', 0),
+            'filtered_count': len(data.get('readings', [])),
+            'outliers_detected': data.get('gateway_stats', {}).get('outliers_removed', 0),
+            'outlier_details': data.get('gateway_stats', {}).get('outlier_details', [])
+        })
         
         # Process gateway-filtered data
         result = process_sensor_data(data, format='json')
@@ -294,8 +314,13 @@ def process_sensor_data(data: Dict[str, Any], format: str = 'json') -> Dict[str,
     }
     db.store_sensor_group(sensor_group_data)
     
-    # Make decisions using decision engine
-    commands = decision_engine.process_sensor_data(data)
+    # ML-assisted decisions
+    ml_commands = ml_manager.predict_commands(device_id, location, readings_data)
+    
+    # Rule-based decisions
+    rule_commands = decision_engine.process_sensor_data(data)
+    
+    commands = ml_commands + rule_commands
     
     # Execute actuator commands
     executed_commands = []
@@ -309,7 +334,7 @@ def process_sensor_data(data: Dict[str, Any], format: str = 'json') -> Dict[str,
             decision_id=str(uuid.uuid4()),
             trigger_sensor=device_id,
             trigger_value=str(readings_data),
-            condition='automated_rule',
+            condition='ml_and_rules',
             actions=commands
         )
         db.store_decision_log(decision_log.to_mongo())
@@ -328,6 +353,30 @@ def process_sensor_data(data: Dict[str, Any], format: str = 'json') -> Dict[str,
         'gateway_processed': gateway_processed
     }
 
+
+def _get_recent_dataframes(hours: int = 24):
+    cutoff = datetime.utcnow() - timedelta(hours=hours)
+    readings = list(db.sensor_readings.find({'timestamp': {'$gte': cutoff}}))
+    commands = list(db.actuator_commands.find({'timestamp': {'$gte': cutoff}}))
+    gateway_logs = list(db.gateway_logs.find({'timestamp': {'$gte': cutoff}}))
+    reading_rows = []
+    for r in readings:
+        for rd in r.get('readings', []):
+            reading_rows.append({
+                'timestamp': r.get('timestamp'),
+                'device_id': r.get('device_id'),
+                'location': r.get('location'),
+                'sensor_type': rd.get('sensor_type'),
+                'value': rd.get('value'),
+                'unit': rd.get('unit'),
+                'format': r.get('format'),
+                'gateway_processed': r.get('gateway_processed', False)
+            })
+    import pandas as pd
+    df_readings = pd.DataFrame(reading_rows)
+    df_commands = pd.DataFrame(commands)
+    df_gateway = pd.DataFrame(gateway_logs)
+    return df_readings, df_commands, df_gateway
 
 def execute_actuator_command(command: ActuatorCommand):
     """Execute an actuator command"""
@@ -452,6 +501,152 @@ def get_statistics():
         logger.error(f"Error getting statistics: {e}", exc_info=True)
         return jsonify({'error': str(e)}), 500
 
+@app.route('/api/analytics/summary', methods=['GET'])
+def analytics_summary():
+    """Descriptive analytics summary"""
+    try:
+        hours = int(request.args.get('hours', 24))
+        sensor_summary = db.get_sensor_aggregate_summary(hours)
+        actuator_usage = db.get_actuator_usage(hours)
+        decision_summary = db.get_decision_summary(hours)
+        gateway_stats = db.get_gateway_statistics(hours)
+        model_status = ml_manager.get_status()
+        return jsonify({
+            'sensor_summary': sensor_summary,
+            'actuator_usage': actuator_usage,
+            'decision_summary': decision_summary,
+            'gateway_statistics': gateway_stats,
+            'model_status': model_status
+        })
+    except Exception as e:
+        logger.error(f"Error in analytics summary: {e}", exc_info=True)
+        return jsonify({'error': str(e)}), 500
+
+@app.route('/api/analytics/export', methods=['GET'])
+def analytics_export():
+    """Export recent sensor and actuator data as CSV"""
+    try:
+        import pandas as pd
+        hours = int(request.args.get('hours', 24))
+        df_readings, df_commands, _ = _get_recent_dataframes(hours)
+        csv_readings = df_readings.to_csv(index=False)
+        csv_commands = df_commands.to_csv(index=False)
+        return jsonify({
+            'readings_csv': csv_readings,
+            'commands_csv': csv_commands
+        })
+    except Exception as e:
+        logger.error(f"Error exporting analytics: {e}", exc_info=True)
+        return jsonify({'error': str(e)}), 500
+
+@app.route('/api/analytics/export/xlsx', methods=['GET'])
+def analytics_export_xlsx():
+    """Export recent sensor and actuator data as XLSX (base64)"""
+    try:
+        import pandas as pd
+        hours = int(request.args.get('hours', 24))
+        df_readings, df_commands, df_gateway = _get_recent_dataframes(hours)
+        buffer = io.BytesIO()
+        with pd.ExcelWriter(buffer, engine="openpyxl") as writer:
+            df_readings.to_excel(writer, index=False, sheet_name="readings")
+            df_commands.to_excel(writer, index=False, sheet_name="commands")
+            df_gateway.to_excel(writer, index=False, sheet_name="gateway_logs")
+        buffer.seek(0)
+        b64 = base64.b64encode(buffer.read()).decode('utf-8')
+        return jsonify({'xlsx_base64': b64})
+    except Exception as e:
+        logger.error(f"Error exporting XLSX: {e}", exc_info=True)
+        return jsonify({'error': str(e)}), 500
+
+@app.route('/api/analytics/export/parquet', methods=['GET'])
+def analytics_export_parquet():
+    """Export recent sensor and actuator data as Parquet (base64)"""
+    try:
+        hours = int(request.args.get('hours', 24))
+        df_readings, df_commands, df_gateway = _get_recent_dataframes(hours)
+        buf_readings = io.BytesIO()
+        buf_commands = io.BytesIO()
+        buf_gateway = io.BytesIO()
+        df_readings.to_parquet(buf_readings, index=False)
+        df_commands.to_parquet(buf_commands, index=False)
+        df_gateway.to_parquet(buf_gateway, index=False)
+        buf_readings.seek(0)
+        buf_commands.seek(0)
+        buf_gateway.seek(0)
+        return jsonify({
+            'readings_parquet_base64': base64.b64encode(buf_readings.read()).decode('utf-8'),
+            'commands_parquet_base64': base64.b64encode(buf_commands.read()).decode('utf-8'),
+            'gateway_parquet_base64': base64.b64encode(buf_gateway.read()).decode('utf-8')
+        })
+    except Exception as e:
+        logger.error(f"Error exporting Parquet: {e}", exc_info=True)
+        return jsonify({'error': str(e)}), 500
+
+@app.route('/api/analytics/charts', methods=['GET'])
+def analytics_charts():
+    """Return simple descriptive charts as base64 PNG"""
+    try:
+        hours = int(request.args.get('hours', 24))
+        df_readings, df_commands, _ = _get_recent_dataframes(hours)
+        charts = {}
+
+        if not df_readings.empty:
+            # Average value per sensor type
+            plt.clf()
+            agg = df_readings.groupby('sensor_type')['value'].mean().sort_values()
+            agg.plot(kind='bar', title=f'Avg sensor values (last {hours}h)')
+            buf = io.BytesIO()
+            plt.tight_layout()
+            plt.savefig(buf, format='png')
+            buf.seek(0)
+            charts['sensor_avg'] = base64.b64encode(buf.read()).decode('utf-8')
+
+        if not df_commands.empty:
+            plt.clf()
+            agg_cmd = df_commands.groupby('actuator_id')['state'].count().sort_values()
+            agg_cmd.plot(kind='bar', title=f'Actuator command counts (last {hours}h)')
+            buf2 = io.BytesIO()
+            plt.tight_layout()
+            plt.savefig(buf2, format='png')
+            buf2.seek(0)
+            charts['actuator_counts'] = base64.b64encode(buf2.read()).decode('utf-8')
+
+        return jsonify({'charts': charts})
+    except Exception as e:
+        logger.error(f"Error generating charts: {e}", exc_info=True)
+        return jsonify({'error': str(e)}), 500
+
+@app.route('/api/ml/status', methods=['GET'])
+def ml_status():
+    """Get ML model status"""
+    try:
+        return jsonify(ml_manager.get_status())
+    except Exception as e:
+        logger.error(f"Error getting ML status: {e}", exc_info=True)
+        return jsonify({'error': str(e)}), 500
+
+@app.route('/api/ml/train', methods=['POST'])
+def ml_train():
+    """Trigger ML retraining"""
+    try:
+        hours = int(request.json.get('hours', 168)) if request.is_json else 168
+        status = ml_manager.train_from_db(hours=hours)
+        return jsonify(status)
+    except Exception as e:
+        logger.error(f"Error training ML model: {e}", exc_info=True)
+        return jsonify({'error': str(e)}), 500
+
+@app.route('/api/ml/drift', methods=['GET'])
+def ml_drift():
+    """Run drift check on recent data window"""
+    try:
+        hours = int(request.args.get('hours', 24))
+        status = ml_manager.check_drift(hours=hours)
+        return jsonify(status)
+    except Exception as e:
+        logger.error(f"Error checking drift: {e}", exc_info=True)
+        return jsonify({'error': str(e)}), 500
+
 
 @app.route('/api/decisions', methods=['GET'])
 def get_recent_decisions():
@@ -522,11 +717,27 @@ def handle_status_request():
     })
 
 
+def _schedule_ml(interval_hours: int = 24):
+    """Background scheduler for periodic ML retrain + drift check."""
+    global ml_scheduler
+    try:
+        ml_manager.train_from_db(hours=168, train_interval_hours=interval_hours)
+        ml_manager.check_drift(hours=24)
+    except Exception as exc:
+        logger.error("Scheduled ML task failed: %s", exc, exc_info=True)
+    # reschedule
+    ml_scheduler = threading.Timer(interval_hours * 3600, _schedule_ml, args=[interval_hours])
+    ml_scheduler.daemon = True
+    ml_scheduler.start()
+
 def main():
     """Main entry point"""
     logger.info("Starting IoT Smart Home Controller")
     logger.info(f"MongoDB: {Config.MONGODB_DATABASE}")
     logger.info(f"Host: {Config.CONTROLLER_HOST}:{Config.CONTROLLER_PORT}")
+    
+    # Kick off periodic ML lifecycle (daily by default)
+    _schedule_ml(interval_hours=24)
     
     try:
         socketio.run(
@@ -538,9 +749,13 @@ def main():
         )
     except KeyboardInterrupt:
         logger.info("Shutting down controller")
+        if ml_scheduler:
+            ml_scheduler.cancel()
         db.close()
     except Exception as e:
         logger.error(f"Error running controller: {e}", exc_info=True)
+        if ml_scheduler:
+            ml_scheduler.cancel()
         db.close()
 
 

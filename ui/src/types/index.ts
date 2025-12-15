@@ -48,6 +48,7 @@ export interface ActuatorCommand {
 export interface SystemStatus {
   status: string;
   timestamp: string;
+  version?: string;
   sensors: {
     total_readings: number;
     readings_last_hour: number;
@@ -78,6 +79,75 @@ export interface SensorConfig {
     values?: string[];
   }>;
   object_types: string[];
+}
+
+export interface SensorAggregate {
+  sensor_type: string;
+  count: number;
+  avg: number | null;
+  min: number | null;
+  max: number | null;
+}
+
+export interface ActuatorUsage {
+  actuator_id: string;
+  count: number;
+  states: string[];
+}
+
+export interface DecisionSummary {
+  total: number;
+  last_hours: number;
+}
+
+export interface ModelStatus {
+  loaded: boolean;
+  last_trained: string | null;
+  samples: number;
+  features: string[];
+  algorithm: string;
+  f1: number | null;
+  version?: number;
+  training_window_hours?: number;
+  drift_score?: number | null;
+  drift_checked_at?: string | null;
+  next_retrain_at?: string | null;
+  baseline_stats?: Record<string, { mean: number; std: number }>;
+}
+
+export interface AnalyticsSummary {
+  sensor_summary: SensorAggregate[];
+  actuator_usage: ActuatorUsage[];
+  decision_summary: DecisionSummary;
+  gateway_statistics: {
+    total_processed: number;
+    batches_with_outliers: number;
+    total_outliers_filtered: number;
+    filter_rate: number;
+  };
+  model_status: ModelStatus;
+}
+
+export interface AnalyticsExport {
+  readings_csv: string;
+  commands_csv: string;
+}
+
+export interface AnalyticsExportXlsx {
+  xlsx_base64: string;
+}
+
+export interface AnalyticsExportParquet {
+  readings_parquet_base64: string;
+  commands_parquet_base64: string;
+  gateway_parquet_base64: string;
+}
+
+export interface AnalyticsCharts {
+  charts: {
+    sensor_avg?: string;
+    actuator_counts?: string;
+  };
 }
 
 export interface GatewayStats {

@@ -94,7 +94,7 @@ const SecurityStatus: React.FC = () => {
       case 'healthy': return 'success';
       case 'degraded': return 'warning';
       case 'unhealthy': return 'error';
-      default: return 'default';
+      default: return 'info';
     }
   };
 

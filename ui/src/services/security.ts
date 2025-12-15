@@ -50,8 +50,7 @@ class SecurityService {
         headers: {
           'X-API-Key': this.config.apiKey,
           'Content-Type': 'application/json'
-        },
-        timeout: 10000
+        }
       });
 
       if (response.ok) {

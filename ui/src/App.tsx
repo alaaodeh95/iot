@@ -1,7 +1,7 @@
 /**
  * Main App Component for IoT Smart Home Dashboard
  */
-import React, { useState, useEffect } from 'react';
+import { useState, useEffect } from 'react';
 import {
   ThemeProvider,
   createTheme,
@@ -16,33 +16,66 @@ import {
   Chip,
   Alert,
   Tabs,
-  Tab
+  Tab,
+  Button,
+  Stack,
+  Divider,
+  FormControl,
+  InputLabel,
+  MenuItem,
+  Select,
+  SelectChangeEvent
 } from '@mui/material';
-import { 
-  Home, 
-  WifiOff, 
-  Wifi, 
+import {
+  Home,
+  WifiOff,
+  Wifi,
   Security as SecurityIcon,
-  Dashboard as DashboardIcon
+  Dashboard as DashboardIcon,
+  Analytics as AnalyticsIcon,
+  Timeline as TimelineIcon,
+  Download as DownloadIcon,
+  Refresh as RefreshIcon
 } from '@mui/icons-material';
+import {
+  ResponsiveContainer,
+  LineChart,
+  Line,
+  XAxis,
+  YAxis,
+  CartesianGrid,
+  Tooltip,
+  Legend
+} from 'recharts';
 import SensorCard from './components/SensorCard';
 import SecurityStatus from './components/SecurityStatus';
 import ActuatorCard from './components/ActuatorCard';
 import { socketService } from './services/socket';
 import { apiService } from './services/api';
 import { securityService } from './services/security';
-import type { SensorData, ActuatorStatus, SystemStatus } from './types';
+import type {
+  SensorData,
+  ActuatorStatus,
+  SystemStatus,
+  DecisionLog,
+  AnalyticsSummary,
+  AnalyticsExport,
+  ModelStatus,
+  AnalyticsExportXlsx,
+  AnalyticsExportParquet,
+  AnalyticsCharts
+} from './types';
 
 const darkTheme = createTheme({
   palette: {
     mode: 'dark',
     primary: {
-      main: '#90caf9',
+      main: '#90caf9'
     },
     secondary: {
-      main: '#f48fb1',
-    },
-  },
+      main: '#f48fb1'
+    }
+  }
 });
 
 function App() {
@@ -53,6 +86,19 @@ function App() {
   const [error, setError] = useState<string | null>(null);
   const [currentTab, setCurrentTab] = useState(0);
   const [authError, setAuthError] = useState<string | null>(null);
+  const [decisions, setDecisions] = useState<DecisionLog[]>([]);
+  const [analytics, setAnalytics] = useState<AnalyticsSummary | null>(null);
+  const [mlStatus, setMlStatus] = useState<ModelStatus | null>(null);
+  const [exportCsv, setExportCsv] = useState<AnalyticsExport | null>(null);
+  const [exportXlsx] = useState<AnalyticsExportXlsx | null>(null);
+  const [exportParquet] = useState<AnalyticsExportParquet | null>(null);
+  const [charts] = useState<AnalyticsCharts['charts'] | null>(null);
+  const [loadingAnalytics, setLoadingAnalytics] = useState(false);
+  const [loadingDrift, setLoadingDrift] = useState(false);
+  const [selectedSensorType, setSelectedSensorType] = useState<string>('temperature');
+  const [sensorHistory, setSensorHistory] = useState<
+    Record<string, { timestamp: string; value: number; device_id: string; location?: string }[]>
+  >({});
 
   useEffect(() => {
     // Connect to WebSocket
@@ -69,6 +115,24 @@ function App() {
         const newData = new Map(prev);
         newData.set(data.device_id, data);
         return newData;
+      });
+
+      // Track numeric readings for chart history
+      setSensorHistory(prev => {
+        const updated = { ...prev };
+        data.readings.forEach(reading => {
+          if (typeof reading.value === 'number') {
+            const arr = updated[reading.sensor_type] ? [...updated[reading.sensor_type]] : [];
+            arr.push({
+              timestamp: data.timestamp || new Date().toISOString(),
+              value: reading.value as number,
+              device_id: data.device_id,
+              location: data.location
+            });
+            updated[reading.sensor_type] = arr.slice(-200);
+          }
+        });
+        return updated;
       });
     };
 
@@ -92,22 +156,21 @@ function App() {
     const fetchInitialData = async () => {
       try {
         console.log('🚀 Starting secure data fetch...');
-        
+
         const [actuatorsData, statusData] = await Promise.all([
           apiService.getActuators(),
           apiService.getSystemStatus()
         ]);
-        
+
         setActuators(actuatorsData);
         setSystemStatus(statusData);
         setError(null);
         setAuthError(null);
-        
+
         console.log('✅ Initial data loaded successfully');
-        
       } catch (err: any) {
         console.error('❌ Error fetching initial data:', err);
-        
+
         if (err.response?.status === 401) {
           const authMsg = 'Authentication failed. Please check your API key configuration.';
           setAuthError(authMsg);
@@ -126,6 +189,8 @@ function App() {
     };
 
     fetchInitialData();
+    refreshAnalytics();
+    refreshDecisions();
 
     // Periodic status update
     const statusInterval = setInterval(async () => {
@@ -145,6 +210,59 @@ function App() {
       socketService.disconnect();
     };
   }, []);
+
+  const refreshDecisions = async () => {
+    try {
+      const items = await apiService.getRecentDecisions(30);
+      setDecisions(items);
+    } catch (err) {
+      console.error('Error fetching decisions:', err);
+    }
+  };
+
+  const refreshAnalytics = async (hours: number = 24) => {
+    try {
+      setLoadingAnalytics(true);
+      const summary = await apiService.getAnalyticsSummary(hours);
+      setAnalytics(summary);
+      const status = await apiService.getMlStatus();
+      setMlStatus(status);
+    } catch (err) {
+      console.error('Error fetching analytics:', err);
+    } finally {
+      setLoadingAnalytics(false);
+    }
+  };
+
+  const handleExport = async (hours: number = 24) => {
+    try {
+      const data = await apiService.exportAnalytics(hours);
+      setExportCsv(data);
+    } catch (err) {
+      console.error('Error exporting analytics:', err);
+    }
+  };
+
+  const handleTrain = async (hours: number = 168) => {
+    try {
+      const status = await apiService.trainMl(hours);
+      setMlStatus(status);
+    } catch (err) {
+      console.error('Error training ML model:', err);
+    }
+  };
+
+  const handleDriftCheck = async (hours: number = 24) => {
+    try {
+      setLoadingDrift(true);
+      const status = await apiService.checkMlDrift(hours);
+      setMlStatus(status);
+    } catch (err) {
+      console.error('Error checking drift:', err);
+    } finally {
+      setLoadingDrift(false);
+    }
+  };
 
   const handleSensorValueChange = async (deviceId: string, location: string, sensorType: string, value: number) => {
     try {
@@ -175,14 +293,14 @@ function App() {
             <Box sx={{ display: 'flex', gap: 2, alignItems: 'center' }}>
               {systemStatus && (
                 <>
-                  <Chip 
-                    label={`${systemStatus.sensors.readings_last_hour} readings/hr`} 
-                    size="small" 
+                  <Chip
+                    label={`${systemStatus.sensors.readings_last_hour} readings/hr`}
+                    size="small"
                     color="primary"
                   />
-                  <Chip 
-                    label={`${systemStatus.actuators.active}/${systemStatus.actuators.total} active`} 
-                    size="small" 
+                  <Chip
+                    label={`${systemStatus.actuators.active}/${systemStatus.actuators.total} active`}
+                    size="small"
                     color="secondary"
                   />
                 </>
@@ -199,14 +317,15 @@ function App() {
 
         {/* Navigation Tabs */}
         <Paper sx={{ borderRadius: 0 }}>
-          <Tabs 
-            value={currentTab} 
+          <Tabs
+            value={currentTab}
             onChange={(_, newValue) => setCurrentTab(newValue)}
             centered
             sx={{ borderBottom: 1, borderColor: 'divider' }}
           >
             <Tab icon={<DashboardIcon />} label="Dashboard" />
             <Tab icon={<SecurityIcon />} label="Security" />
+            <Tab icon={<AnalyticsIcon />} label="Analytics" />
           </Tabs>
         </Paper>
 
@@ -218,7 +337,8 @@ function App() {
               {authError}
               <Box sx={{ mt: 1 }}>
                 <Typography variant="body2">
-                  Check your <code>VITE_API_KEY</code> environment variable or switch to the Security tab for diagnostics.
+                  Check your <code>VITE_API_KEY</code> environment variable or switch to the Security tab for
+                  diagnostics.
                 </Typography>
               </Box>
             </Alert>
@@ -236,58 +356,53 @@ function App() {
             <>
               {/* Sensors Section */}
               <Paper elevation={3} sx={{ p: 3, mb: 4 }}>
-            <Typography variant="h5" gutterBottom sx={{ mb: 3 }}>
-              📊 Live Sensors
-            </Typography>
-            <Grid container spacing={3}>
-              {Array.from(sensorData.values()).map((data) =>
-                data.readings.map((reading, idx) => (
-                  <Grid item xs={12} sm={6} md={4} lg={3} key={`${data.device_id}-${idx}`}>
-                    <SensorCard
-                      deviceId={data.device_id}
-                      location={data.location}
-                      reading={reading}
-                      format={data.format}
-                      onValueChange={(sensorType, value) =>
-                        handleSensorValueChange(data.device_id, data.location, sensorType, value)
-                      }
-                    />
-                  </Grid>
-                ))
-              )}
-              {sensorData.size === 0 && (
-                <Grid item xs={12}>
-                  <Alert severity="info">
-                    Waiting for sensor data... Please ensure the sensor service is running.
-                  </Alert>
+                <Typography variant="h5" gutterBottom sx={{ mb: 3 }}>
+                  📊 Live Sensors
+                </Typography>
+                <Grid container spacing={3}>
+                  {Array.from(sensorData.values()).map(data =>
+                    data.readings.map((reading, idx) => (
+                      <Grid item xs={12} sm={6} md={4} lg={3} key={`${data.device_id}-${idx}`}>
+                        <SensorCard
+                          deviceId={data.device_id}
+                          location={data.location}
+                          reading={reading}
+                          format={data.format}
+                          onValueChange={(sensorType, value) =>
+                            handleSensorValueChange(data.device_id, data.location, sensorType, value)
+                          }
+                        />
+                      </Grid>
+                    ))
+                  )}
+                  {sensorData.size === 0 && (
+                    <Grid item xs={12}>
+                      <Alert severity="info">
+                        Waiting for sensor data... Please ensure the sensor service is running.
+                      </Alert>
+                    </Grid>
+                  )}
                 </Grid>
-              )}
-            </Grid>
-          </Paper>
+              </Paper>
 
-          {/* Actuators Section */}
-          <Paper elevation={3} sx={{ p: 3 }}>
-            <Typography variant="h5" gutterBottom sx={{ mb: 3 }}>
-              🎛️ Actuators
-            </Typography>
-            <Grid container spacing={3}>
-              {actuators.map((actuator) => (
-                <Grid item xs={12} sm={6} md={4} lg={3} key={actuator.actuator_id}>
-                  <ActuatorCard
-                    actuator={actuator}
-                    onToggle={handleActuatorToggle}
-                  />
+              {/* Actuators Section */}
+              <Paper elevation={3} sx={{ p: 3 }}>
+                <Typography variant="h5" gutterBottom sx={{ mb: 3 }}>
+                  🎛️ Actuators
+                </Typography>
+                <Grid container spacing={3}>
+                  {actuators.map(actuator => (
+                    <Grid item xs={12} sm={6} md={4} lg={3} key={actuator.actuator_id}>
+                      <ActuatorCard actuator={actuator} onToggle={handleActuatorToggle} />
+                    </Grid>
+                  ))}
+                  {actuators.length === 0 && (
+                    <Grid item xs={12}>
+                      <Alert severity="info">Loading actuators...</Alert>
+                    </Grid>
+                  )}
                 </Grid>
-              ))}
-              {actuators.length === 0 && (
-                <Grid item xs={12}>
-                  <Alert severity="info">
-                    Loading actuators...
-                  </Alert>
-                </Grid>
-              )}
-            </Grid>
-          </Paper>
+              </Paper>
             </>
           )}
 
@@ -295,13 +410,13 @@ function App() {
           {currentTab === 1 && (
             <>
               <SecurityStatus />
-              
+
               {/* Security Information */}
               <Paper elevation={3} sx={{ p: 3, mt: 4 }}>
                 <Typography variant="h5" gutterBottom>
                   🔒 Security Information
                 </Typography>
-                
+
                 <Grid container spacing={3}>
                   <Grid item xs={12} md={6}>
                     <Box>
@@ -319,7 +434,7 @@ function App() {
                       </Typography>
                     </Box>
                   </Grid>
-                  
+
                   <Grid item xs={12} md={6}>
                     <Box>
                       <Typography variant="h6" gutterBottom>
@@ -338,7 +453,355 @@ function App() {
                   </Grid>
                 </Grid>
               </Paper>
+
+              <Paper elevation={3} sx={{ p: 3, mt: 4 }}>
+                <Typography variant="h6" gutterBottom>
+                  🧾 Sample Payloads (JSON & XML/SOAP)
+                </Typography>
+                <Stack spacing={2}>
+                  <Box>
+                    <Typography variant="subtitle2">Roof Station JSON</Typography>
+                    <Typography variant="body2" component="pre" sx={{ whiteSpace: 'pre-wrap' }}>
+                      {`{
+  "device_id": "roof_station",
+  "location": "roof",
+  "readings": [
+    {"sensor_type":"temperature","value":28.4,"unit":"°C"},
+    {"sensor_type":"humidity","value":55.2,"unit":"%"},
+    {"sensor_type":"pressure","value":1012.3,"unit":"hPa"}
+  ],
+  "format": "json"
+}`}
+                    </Typography>
+                  </Box>
+                  <Divider />
+                  <Box>
+                    <Typography variant="subtitle2">Dust Cleaner SOAP/XML</Typography>
+                    <Typography variant="body2" component="pre" sx={{ whiteSpace: 'pre-wrap' }}>
+                      {`<soapenv:Envelope xmlns:soapenv="http://schemas.xmlsoap.org/soap/envelope/">
+  <soapenv:Body>
+    <sensor_data>
+      <device_id>dust_cleaner</device_id>
+      <location>mobile</location>
+      <sensor>
+        <type>distance</type><value>42.1</value><unit>cm</unit>
+      </sensor>
+      <sensor>
+        <type>object_detection</type><value>chair</value><unit>string</unit>
+      </sensor>
+      <sensor>
+        <type>signal_strength</type><value>-48</value><unit>dBm</unit>
+      </sensor>
+    </sensor_data>
+  </soapenv:Body>
+</soapenv:Envelope>`}
+                    </Typography>
+                  </Box>
+                </Stack>
+              </Paper>
             </>
+          )}
+
+          {/* Analytics Tab Content */}
+          {currentTab === 2 && (
+            <Stack spacing={3}>
+              <Paper elevation={3} sx={{ p: 3 }}>
+                <Stack
+                  direction="row"
+                  spacing={2}
+                  alignItems="center"
+                  justifyContent="space-between"
+                  sx={{ mb: 2 }}
+                >
+                  <Typography variant="h5">📊 Live Sensor Chart</Typography>
+                  <FormControl size="small" sx={{ minWidth: 200 }}>
+                    <InputLabel id="sensor-type-label">Sensor Type</InputLabel>
+                    <Select
+                      labelId="sensor-type-label"
+                      value={selectedSensorType}
+                      label="Sensor Type"
+                      onChange={(e: SelectChangeEvent<string>) => setSelectedSensorType(e.target.value)}
+                    >
+                      {Array.from(
+                        new Set(
+                          Object.keys(sensorHistory).concat(
+                            Array.from(sensorData.values()).flatMap(d =>
+                              d.readings.map(r => r.sensor_type)
+                            )
+                          )
+                        )
+                      ).map(type => (
+                        <MenuItem value={type} key={type}>
+                          {type}
+                        </MenuItem>
+                      ))}
+                    </Select>
+                  </FormControl>
+                </Stack>
+                <Box sx={{ height: 280 }}>
+                  {sensorHistory[selectedSensorType]?.length ? (
+                    <ResponsiveContainer width="100%" height="100%">
+                      <LineChart data={sensorHistory[selectedSensorType]}>
+                        <CartesianGrid strokeDasharray="3 3" />
+                        <XAxis
+                          dataKey="timestamp"
+                          tickFormatter={(v: string) => v.split('T')[1]?.slice(0, 8) || v}
+                          minTickGap={20}
+                        />
+                        <YAxis />
+                        <Tooltip />
+                        <Legend />
+                        <Line type="monotone" dataKey="value" stroke="#90caf9" dot={false} />
+                      </LineChart>
+                    </ResponsiveContainer>
+                  ) : (
+                    <Alert severity="info">No data yet for selected sensor.</Alert>
+                  )}
+                </Box>
+              </Paper>
+              <Paper elevation={3} sx={{ p: 3 }}>
+                <Stack
+                  direction="row"
+                  spacing={2}
+                  alignItems="center"
+                  justifyContent="space-between"
+                >
+                  <Typography variant="h5">📈 Analytics & Gateway</Typography>
+                  <Stack direction="row" spacing={1}>
+                    <Button
+                      variant="contained"
+                      size="small"
+                      startIcon={<RefreshIcon />}
+                      onClick={() => refreshAnalytics(24)}
+                    >
+                      Refresh
+                    </Button>
+                    <Button
+                      variant="outlined"
+                      size="small"
+                      startIcon={<DownloadIcon />}
+                      onClick={() => handleExport(24)}
+                    >
+                      Export CSV
+                    </Button>
+                  </Stack>
+                </Stack>
+
+                {loadingAnalytics && (
+                  <Alert severity="info" sx={{ mt: 2 }}>
+                    Loading analytics...
+                  </Alert>
+                )}
+
+                {analytics && (
+                  <Grid container spacing={2} sx={{ mt: 1 }}>
+                    <Grid item xs={12} md={6}>
+                      <Typography variant="subtitle1">Sensor Summary (last 24h)</Typography>
+                      <Box component="ul" sx={{ pl: 2, mt: 1 }}>
+                        {analytics.sensor_summary.map(s => (
+                          <li key={s.sensor_type}>
+                            {s.sensor_type}: count={s.count}, avg={s.avg?.toFixed(2) ?? 'N/A'}, min={s.min ?? 'N/A'},{' '}
+                            max={s.max ?? 'N/A'}
+                          </li>
+                        ))}
+                      </Box>
+                    </Grid>
+                    <Grid item xs={12} md={6}>
+                      <Typography variant="subtitle1">Actuator Usage</Typography>
+                      <Box component="ul" sx={{ pl: 2, mt: 1 }}>
+                        {analytics.actuator_usage.map(a => (
+                          <li key={a.actuator_id}>
+                            {a.actuator_id}: {a.count} commands (states: {a.states.join(', ')})
+                          </li>
+                        ))}
+                      </Box>
+                    </Grid>
+                    <Grid item xs={12} md={6}>
+                      <Typography variant="subtitle1">Gateway Statistics</Typography>
+                      <Box component="ul" sx={{ pl: 2, mt: 1 }}>
+                        <li>Total batches: {analytics.gateway_statistics.total_processed}</li>
+                        <li>Batches with outliers: {analytics.gateway_statistics.batches_with_outliers}</li>
+                        <li>Total outliers filtered: {analytics.gateway_statistics.total_outliers_filtered}</li>
+                        <li>
+                          Filter rate: {(analytics.gateway_statistics.filter_rate * 100).toFixed(2)}%
+                        </li>
+                      </Box>
+                    </Grid>
+                    <Grid item xs={12} md={6}>
+                      <Typography variant="subtitle1">Decision Summary</Typography>
+                      <Box component="ul" sx={{ pl: 2, mt: 1 }}>
+                        <li>Total decisions: {analytics.decision_summary.total}</li>
+                        <li>Last window: {analytics.decision_summary.last_hours}</li>
+                      </Box>
+                    </Grid>
+                  </Grid>
+                )}
+
+                {exportCsv && (
+                  <Alert severity="success" sx={{ mt: 2 }}>
+                    Export ready. Copy CSV from console/logs or download below.
+                  </Alert>
+                )}
+                {(exportXlsx || exportParquet || exportCsv) && (
+                  <Stack spacing={1} sx={{ mt: 2 }}>
+                    {exportCsv && (
+                      <Button
+                        component="a"
+                        href={`data:text/csv;base64,${btoa(exportCsv.readings_csv)}`}
+                        download="readings.csv"
+                        variant="outlined"
+                        size="small"
+                      >
+                        Download Readings CSV
+                      </Button>
+                    )}
+                    {exportCsv && (
+                      <Button
+                        component="a"
+                        href={`data:text/csv;base64,${btoa(exportCsv.commands_csv)}`}
+                        download="commands.csv"
+                        variant="outlined"
+                        size="small"
+                      >
+                        Download Commands CSV
+                      </Button>
+                    )}
+                    {exportXlsx && (
+                      <Button
+                        component="a"
+                        href={`data:application/vnd.openxmlformats-officedocument.spreadsheetml.sheet;base64,${exportXlsx.xlsx_base64}`}
+                        download="analytics.xlsx"
+                        variant="contained"
+                        size="small"
+                      >
+                        Download XLSX
+                      </Button>
+                    )}
+                    {exportParquet && (
+                      <Stack direction="row" spacing={1}>
+                        <Button
+                          component="a"
+                          href={`data:application/octet-stream;base64,${exportParquet.readings_parquet_base64}`}
+                          download="readings.parquet"
+                          variant="contained"
+                          size="small"
+                        >
+                          Download Readings Parquet
+                        </Button>
+                        <Button
+                          component="a"
+                          href={`data:application/octet-stream;base64,${exportParquet.commands_parquet_base64}`}
+                          download="commands.parquet"
+                          variant="contained"
+                          size="small"
+                        >
+                          Download Commands Parquet
+                        </Button>
+                        <Button
+                          component="a"
+                          href={`data:application/octet-stream;base64,${exportParquet.gateway_parquet_base64}`}
+                          download="gateway_logs.parquet"
+                          variant="contained"
+                          size="small"
+                        >
+                          Download Gateway Parquet
+                        </Button>
+                      </Stack>
+                    )}
+                  </Stack>
+                )}
+                {charts && (
+                  <Grid container spacing={2} sx={{ mt: 2 }}>
+                    {charts.sensor_avg && (
+                      <Grid item xs={12} md={6}>
+                        <Paper variant="outlined" sx={{ p: 2 }}>
+                          <Typography variant="subtitle1">Sensor Averages</Typography>
+                          <Box
+                            component="img"
+                            src={`data:image/png;base64,${charts.sensor_avg}`}
+                            alt="sensor averages"
+                            sx={{ width: '100%', mt: 1 }}
+                          />
+                        </Paper>
+                      </Grid>
+                    )}
+                    {charts.actuator_counts && (
+                      <Grid item xs={12} md={6}>
+                        <Paper variant="outlined" sx={{ p: 2 }}>
+                          <Typography variant="subtitle1">Actuator Command Counts</Typography>
+                          <Box
+                            component="img"
+                            src={`data:image/png;base64,${charts.actuator_counts}`}
+                            alt="actuator counts"
+                            sx={{ width: '100%', mt: 1 }}
+                          />
+                        </Paper>
+                      </Grid>
+                    )}
+                  </Grid>
+                )}
+              </Paper>
+
+              <Paper elevation={3} sx={{ p: 3 }}>
+                <Stack direction="row" spacing={2} alignItems="center" justifyContent="space-between">
+                  <Typography variant="h5">🤖 ML Model Status</Typography>
+                  <Stack direction="row" spacing={1}>
+                    <Button variant="outlined" size="small" onClick={() => refreshAnalytics(24)}>
+                      Refresh
+                    </Button>
+                    <Button variant="contained" size="small" startIcon={<RefreshIcon />} onClick={() => handleTrain(168)}>
+                      Retrain (7d)
+                    </Button>
+                    <Button variant="outlined" size="small" disabled={loadingDrift} onClick={() => handleDriftCheck(24)}>
+                      {loadingDrift ? 'Checking drift...' : 'Check Drift (24h)'}
+                    </Button>
+                  </Stack>
+                </Stack>
+                {mlStatus ? (
+                  <Box sx={{ mt: 2 }}>
+                    <Typography variant="body2">Loaded: {mlStatus.loaded ? 'Yes' : 'No'}</Typography>
+                    <Typography variant="body2">Version: {mlStatus.version ?? 'N/A'}</Typography>
+                    <Typography variant="body2">Last trained: {mlStatus.last_trained || 'N/A'}</Typography>
+                    <Typography variant="body2">Next retrain: {mlStatus.next_retrain_at || 'N/A'}</Typography>
+                    <Typography variant="body2">
+                      Training window (h): {mlStatus.training_window_hours ?? 'N/A'}
+                    </Typography>
+                    <Typography variant="body2">Samples: {mlStatus.samples}</Typography>
+                    <Typography variant="body2">Features: {mlStatus.features.join(', ')}</Typography>
+                    <Typography variant="body2">Algorithm: {mlStatus.algorithm}</Typography>
+                    <Typography variant="body2">F1: {mlStatus.f1 ?? 'N/A'}</Typography>
+                    <Typography variant="body2">Drift score: {mlStatus.drift_score ?? 'N/A'}</Typography>
+                    <Typography variant="body2">Drift checked: {mlStatus.drift_checked_at || 'N/A'}</Typography>
+                  </Box>
+                ) : (
+                  <Alert severity="info" sx={{ mt: 2 }}>
+                    No ML status yet.
+                  </Alert>
+                )}
+              </Paper>
+
+              <Paper elevation={3} sx={{ p: 3 }}>
+                <Stack direction="row" spacing={1} alignItems="center" sx={{ mb: 1 }}>
+                  <TimelineIcon fontSize="small" />
+                  <Typography variant="h6">Recent Decisions</Typography>
+                </Stack>
+                {decisions.length === 0 && <Alert severity="info">No decisions yet.</Alert>}
+                <Stack spacing={1}>
+                  {decisions.map(d => (
+                    <Paper key={d.decision_id} variant="outlined" sx={{ p: 1.5 }}>
+                      <Typography variant="subtitle2">{d.trigger_sensor}</Typography>
+                      <Typography variant="caption" color="text.secondary">
+                        {d.timestamp}
+                      </Typography>
+                      <Typography variant="body2">Condition: {d.condition}</Typography>
+                      <Typography variant="body2">
+                        Actions: {d.actions.map(a => `${a.actuator_id}:${a.state}`).join(', ')}
+                      </Typography>
+                    </Paper>
+                  ))}
+                </Stack>
+              </Paper>
+            </Stack>
           )}
 
           {/* Footer */}

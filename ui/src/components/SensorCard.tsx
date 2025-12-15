@@ -22,7 +22,12 @@ import {
   Cloud,
   Sensors,
   Warning,
-  CheckCircle
+  CheckCircle,
+  VolumeUp,
+  Vibration,
+  Bolt,
+  WbSunny,
+  Opacity
 } from '@mui/icons-material';
 import type { SensorReading } from '../types';
 
@@ -51,6 +56,20 @@ const getSensorIcon = (sensorType: string) => {
     case 'co2':
     case 'gas':
       return <Warning {...iconProps} color="warning" />;
+    case 'sound':
+      return <VolumeUp {...iconProps} color="secondary" />;
+    case 'vibration':
+      return <Vibration {...iconProps} color="info" />;
+    case 'energy':
+      return <Bolt {...iconProps} color="warning" />;
+    case 'uv':
+      return <WbSunny {...iconProps} color="warning" />;
+    case 'rain':
+      return <Opacity {...iconProps} color="info" />;
+    case 'glass_break':
+      return <Warning {...iconProps} color="error" />;
+    case 'pressure_mat':
+      return <DirectionsRun {...iconProps} color="success" />;
     default:
       return <Sensors {...iconProps} color="action" />;
   }
@@ -75,6 +94,25 @@ const getSensorColor = (sensorType: string, value: number | string): string => {
     case 'light':
       if (value < 200) return 'info';
       return 'success';
+    case 'sound':
+      if (value >= 95) return 'error';
+      if (value >= 75) return 'warning';
+      return 'success';
+    case 'vibration':
+      if (value >= 0.6) return 'error';
+      if (value >= 0.3) return 'warning';
+      return 'success';
+    case 'energy':
+      if (value >= 2500) return 'error';
+      if (value >= 1500) return 'warning';
+      return 'success';
+    case 'uv':
+      if (value >= 8) return 'warning';
+      return 'success';
+    case 'rain':
+    case 'glass_break':
+    case 'pressure_mat':
+      return value === 1 ? 'warning' : 'info';
     default:
       return 'info';
   }
@@ -84,7 +122,8 @@ const getValueDisplay = (value: number | string, unit: string): string => {
   if (typeof value === 'number') {
     return `${value.toFixed(1)} ${unit}`;
   }
-  return `${value}`;
+  if (typeof value === 'string') return value;
+  return value === 1 ? 'ON' : 'OFF';
 };
 
 const getSensorRange = (sensorType: string): { min: number; max: number } => {
@@ -96,7 +135,14 @@ const getSensorRange = (sensorType: string): { min: number; max: number } => {
     co2: { min: 400, max: 2500 },
     gas: { min: 0, max: 2000 },
     distance: { min: 5, max: 400 },
-    signal_strength: { min: -90, max: -20 }
+    signal_strength: { min: -90, max: -20 },
+    sound: { min: 20, max: 120 },
+    vibration: { min: 0, max: 2 },
+    energy: { min: 0, max: 5000 },
+    uv: { min: 0, max: 15 },
+    rain: { min: 0, max: 1 },
+    glass_break: { min: 0, max: 1 },
+    pressure_mat: { min: 0, max: 1 }
   };
   
   return ranges[sensorType] || { min: 0, max: 100 };

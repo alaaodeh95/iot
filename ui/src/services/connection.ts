@@ -117,7 +117,7 @@ class ConnectionService {
             });
           };
 
-          testWs.onerror = (error) => {
+          testWs.onerror = () => {
             clearTimeout(timeout);
             resolve({
               success: false,

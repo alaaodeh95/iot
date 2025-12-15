@@ -2,7 +2,18 @@
  * API service for communicating with the IoT backend
  */
 import axios from 'axios';
-import type { ActuatorStatus, SystemStatus, DecisionLog, SensorConfig } from '../types';
+import type {
+  ActuatorStatus,
+  SystemStatus,
+  DecisionLog,
+  SensorConfig,
+  AnalyticsSummary,
+  AnalyticsExport,
+  AnalyticsExportXlsx,
+  AnalyticsExportParquet,
+  AnalyticsCharts,
+  ModelStatus
+} from '../types';
 
 const API_BASE_URL = import.meta.env.VITE_API_URL || 'http://localhost:5000';
 const API_KEY = import.meta.env.VITE_API_KEY || 'iot-secure-api-key-2024';
@@ -150,6 +161,58 @@ export const apiService = {
         location
       }
     });
+    return response.data;
+  },
+
+  /**
+   * Analytics summary (sensor aggregates, actuator usage, decisions, gateway, model status)
+   */
+  getAnalyticsSummary: async (hours: number = 24): Promise<AnalyticsSummary> => {
+    const response = await api.get('/api/analytics/summary', { params: { hours } });
+    return response.data;
+  },
+
+  /**
+   * Export readings/commands as CSV
+   */
+  exportAnalytics: async (hours: number = 24): Promise<AnalyticsExport> => {
+    const response = await api.get('/api/analytics/export', { params: { hours } });
+    return response.data;
+  },
+
+  exportAnalyticsXlsx: async (hours: number = 24): Promise<AnalyticsExportXlsx> => {
+    const response = await api.get('/api/analytics/export/xlsx', { params: { hours } });
+    return response.data;
+  },
+
+  exportAnalyticsParquet: async (hours: number = 24): Promise<AnalyticsExportParquet> => {
+    const response = await api.get('/api/analytics/export/parquet', { params: { hours } });
+    return response.data;
+  },
+
+  getAnalyticsCharts: async (hours: number = 24): Promise<AnalyticsCharts> => {
+    const response = await api.get('/api/analytics/charts', { params: { hours } });
+    return response.data;
+  },
+
+  /**
+   * ML model status
+   */
+  getMlStatus: async (): Promise<ModelStatus> => {
+    const response = await api.get('/api/ml/status');
+    return response.data;
+  },
+
+  checkMlDrift: async (hours: number = 24): Promise<ModelStatus> => {
+    const response = await api.get('/api/ml/drift', { params: { hours } });
+    return response.data;
+  },
+
+  /**
+   * Trigger ML training
+   */
+  trainMl: async (hours: number = 168): Promise<ModelStatus> => {
+    const response = await api.post('/api/ml/train', { hours });
     return response.data;
   }
 };

@@ -45,9 +45,13 @@ class SensorService:
         self.security_manager = SecurityManager(Config)
         self.device_tokens: Dict[str, str] = {}
         self.encryption = RequestEncryption(Config.API_KEY)
+        self.demo_mode = Config.DEMO_MODE
         
         # Initialize devices from config
         self._initialize_devices()
+        
+        if self.demo_mode:
+            logger.info("DEMO_MODE enabled: forcing fixed cycles with verbose per-cycle logs")
         
         # Authenticate all devices on startup
         self._authenticate_devices()
@@ -126,7 +130,7 @@ class SensorService:
         )
         
         cycle_count = 0
-        max_cycles = Config.FIXED_CYCLES if not Config.CONTINUOUS_MODE else float('inf')
+        max_cycles = Config.FIXED_CYCLES if (self.demo_mode or not Config.CONTINUOUS_MODE) else float('inf')
         
         while self.running and cycle_count < max_cycles:
             try:
@@ -135,11 +139,20 @@ class SensorService:
                 
                 # Send data based on format
                 if data_format == 'json':
-                    self._send_json_data(sensor_data, use_gateway)
+                    send_result = self._send_json_data(sensor_data, use_gateway)
                 elif data_format == 'xml':
-                    self._send_xml_data(sensor_data)
+                    send_result = self._send_xml_data(sensor_data)
+                else:
+                    send_result = {'status': 'skipped', 'reason': 'unknown format'}
                 
                 cycle_count += 1
+                
+                if self.demo_mode:
+                    logger.info(
+                        f"[DEMO] Cycle {cycle_count}/{max_cycles} device={device_id} "
+                        f"format={data_format} readings={len(sensor_data['readings'])} "
+                        f"gateway={use_gateway} result={send_result}"
+                    )
                 
                 # Add occasional outliers for gateway testing (5% chance)
                 if use_gateway and random.random() < 0.05:
@@ -151,7 +164,7 @@ class SensorService:
                 logger.error(f"Error in device {device_id}: {e}", exc_info=True)
                 time.sleep(interval)
         
-        logger.info(f"Device {device_id} completed {cycle_count} cycles")
+        logger.info(f"Device {device_id} completed {cycle_count} cycles (demo_mode={self.demo_mode})")
     
     def _authenticate_devices(self):
         """Authenticate all devices and obtain JWT tokens"""
@@ -233,6 +246,11 @@ class SensorService:
                         f"Secure JSON data from {device_id} sent via gateway "
                         f"(outliers filtered: {result.get('outliers_filtered', 0)})"
                     )
+                return {
+                    'status': result.get('status', 'unknown'),
+                    'gateway': True,
+                    'outliers_filtered': result.get('outliers_filtered', 0)
+                }
             else:
                 # Encrypt sensitive data if needed
                 secure_data = sensor_data.copy()
@@ -253,14 +271,17 @@ class SensorService:
                 
                 if response.status_code == 200:
                     logger.debug(f"JSON data from {device_id} sent successfully")
+                    return {'status': 'success', 'gateway': False}
                 else:
                     logger.warning(
                         f"Controller returned status {response.status_code} "
                         f"for {device_id}"
                     )
+                    return {'status': 'error', 'gateway': False, 'code': response.status_code}
                     
         except requests.exceptions.RequestException as e:
             logger.error(f"Error sending JSON data from {device_id}: {e}")
+            return {'status': 'error', 'gateway': use_gateway, 'message': str(e)}
     
     def _send_xml_data(self, sensor_data: Dict):
         """Send sensor data in XML/SOAP format"""

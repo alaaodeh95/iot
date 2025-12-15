@@ -27,6 +27,7 @@ class Config:
     SIMULATION_INTERVAL = float(os.getenv('SIMULATION_INTERVAL', 3.0))  # seconds
     CONTINUOUS_MODE = os.getenv('CONTINUOUS_MODE', 'true').lower() == 'true'
     FIXED_CYCLES = int(os.getenv('FIXED_CYCLES', 20))
+    DEMO_MODE = os.getenv('DEMO_MODE', 'false').lower() == 'true'  # force fixed cycles with verbose cycle logs
     
     # Decision Rules Configuration
     DECISION_RULES = {
@@ -64,6 +65,30 @@ class Config:
         },
         'water_leak': {
             'detected_action': 'shutdown'
+        },
+        'sound': {
+            'warning_threshold': 75.0,  # dB
+            'critical_threshold': 95.0
+        },
+        'vibration': {
+            'warning_threshold': 0.3,  # g
+            'critical_threshold': 0.6
+        },
+        'energy': {
+            'high_threshold': 1500.0,  # W
+            'critical_threshold': 2500.0
+        },
+        'uv': {
+            'high_threshold': 8.0  # UV index
+        },
+        'rain': {
+            'detected_action': 'rain_protection'
+        },
+        'glass_break': {
+            'detected_action': 'alarm'
+        },
+        'pressure_mat': {
+            'detected_action': 'presence'
         }
     }
     
@@ -114,8 +139,36 @@ class Config:
         'entrance': {
             'type': 'json',
             'location': 'entrance',
-            'sensors': ['motion', 'door_sensor', 'rfid'],
+            'sensors': ['motion', 'door_sensor', 'rfid', 'pressure_mat'],
             'update_interval': 0.5,
+            'gateway_enabled': False
+        },
+        'garage': {
+            'type': 'json',
+            'location': 'garage',
+            'sensors': ['vibration', 'glass_break', 'motion', 'door_sensor'],
+            'update_interval': 1.5,
+            'gateway_enabled': False
+        },
+        'garden': {
+            'type': 'json',
+            'location': 'garden',
+            'sensors': ['rain', 'uv', 'light'],
+            'update_interval': 2.5,
+            'gateway_enabled': False
+        },
+        'utility_meter': {
+            'type': 'json',
+            'location': 'utility',
+            'sensors': ['energy', 'sound'],
+            'update_interval': 3.0,
+            'gateway_enabled': False
+        },
+        'cctv_entrance': {
+            'type': 'json',
+            'location': 'entrance',
+            'sensors': ['camera'],
+            'update_interval': 5.0,
             'gateway_enabled': False
         }
     }
@@ -176,6 +229,21 @@ class Config:
             'type': 'lock',
             'location': 'entrance',
             'states': ['locked', 'unlocked']
+        },
+        'smart_plug': {
+            'type': 'switch',
+            'location': 'utility',
+            'states': ['off', 'on']
+        },
+        'rain_shutter': {
+            'type': 'shutter',
+            'location': 'garden',
+            'states': ['open', 'closed']
+        },
+        'siren': {
+            'type': 'alarm',
+            'location': 'garage',
+            'priority': 'critical'
         }
     }
     
@@ -191,7 +259,11 @@ class Config:
             'pressure': {'min': 900, 'max': 1100},
             'light': {'min': 0, 'max': 100000},
             'co2': {'min': 300, 'max': 5000},
-            'distance': {'min': 0, 'max': 400}
+            'distance': {'min': 0, 'max': 400},
+            'sound': {'min': 20, 'max': 120},
+            'vibration': {'min': 0, 'max': 2},
+            'energy': {'min': 0, 'max': 5000},
+            'uv': {'min': 0, 'max': 15}
         }
     }
     
@@ -218,7 +290,10 @@ class Config:
         'dust_cleaner': os.getenv('DUST_CLEANER_KEY', 'dust-cleaner-key-2024'),
         'bedroom': os.getenv('BEDROOM_KEY', 'bedroom-device-key-2024'),
         'basement': os.getenv('BASEMENT_KEY', 'basement-device-key-2024'),
-        'entrance': os.getenv('ENTRANCE_KEY', 'entrance-device-key-2024')
+        'entrance': os.getenv('ENTRANCE_KEY', 'entrance-device-key-2024'),
+        'garage': os.getenv('GARAGE_KEY', 'garage-device-key-2024'),
+        'garden': os.getenv('GARDEN_KEY', 'garden-device-key-2024'),
+        'utility_meter': os.getenv('UTILITY_METER_KEY', 'utility-meter-key-2024')
     }
     
     # SSL/TLS Configuration
@@ -260,7 +335,15 @@ class Config:
             'door_sensor': {'min': 0, 'max': 1, 'unit': 'boolean'},
             'water_leak': {'min': 0, 'max': 1, 'unit': 'boolean'},
             'signal_strength': {'min': -90.0, 'max': -20.0, 'unit': 'dBm'},
-            'rfid': {'values': ['None', 'Tag001', 'Tag002', 'Tag003', 'Tag004'], 'unit': 'string'}
+            'rfid': {'values': ['None', 'Tag001', 'Tag002', 'Tag003', 'Tag004'], 'unit': 'string'},
+            'sound': {'min': 20.0, 'max': 110.0, 'unit': 'dB'},
+            'vibration': {'min': 0.0, 'max': 1.0, 'unit': 'g'},
+            'energy': {'min': 0.0, 'max': 4000.0, 'unit': 'W'},
+            'uv': {'min': 0.0, 'max': 12.0, 'unit': 'uv_index'},
+            'rain': {'min': 0, 'max': 1, 'unit': 'boolean'},
+            'glass_break': {'min': 0, 'max': 1, 'unit': 'boolean'},
+            'pressure_mat': {'min': 0, 'max': 1, 'unit': 'boolean'},
+            'camera': {'unit': 'image_ref'}
         }
     
     @classmethod

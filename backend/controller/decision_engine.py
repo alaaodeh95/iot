@@ -64,6 +64,20 @@ class DecisionEngine:
                 commands.extend(self._process_water_leak(value, location))
             elif sensor_type == 'door_sensor':
                 commands.extend(self._process_door_sensor(value, location))
+            elif sensor_type == 'sound':
+                commands.extend(self._process_sound(value, location))
+            elif sensor_type == 'vibration':
+                commands.extend(self._process_vibration(value, location))
+            elif sensor_type == 'energy':
+                commands.extend(self._process_energy(value, location))
+            elif sensor_type == 'uv':
+                commands.extend(self._process_uv(value, location))
+            elif sensor_type == 'rain':
+                commands.extend(self._process_rain(value, location))
+            elif sensor_type == 'glass_break':
+                commands.extend(self._process_glass_break(value, location))
+            elif sensor_type == 'pressure_mat':
+                commands.extend(self._process_pressure_mat(value, location))
         
         # Cross-sensor intelligence (combine multiple sensor inputs)
         commands.extend(self._cross_sensor_decisions(device_id, location, readings))
@@ -358,6 +372,105 @@ class DecisionEngine:
                 reason='Entrance door opened'
             ))
         
+        return commands
+
+    def _process_sound(self, sound: float, location: str) -> List[ActuatorCommand]:
+        commands = []
+        rules = self.rules.get('sound', {})
+        if not rules:
+            return commands
+        if sound >= rules['critical_threshold']:
+            commands.append(ActuatorCommand(
+                actuator_id='siren',
+                actuator_type='alarm',
+                state='on',
+                reason=f'Critical noise {sound} dB at {location}'
+            ))
+        elif sound >= rules['warning_threshold']:
+            # optional logging only
+            pass
+        return commands
+
+    def _process_vibration(self, vib: float, location: str) -> List[ActuatorCommand]:
+        commands = []
+        rules = self.rules.get('vibration', {})
+        if not rules:
+            return commands
+        if vib >= rules['critical_threshold']:
+            commands.append(ActuatorCommand(
+                actuator_id='siren',
+                actuator_type='alarm',
+                state='on',
+                reason=f'Critical vibration {vib}g at {location}'
+            ))
+        return commands
+
+    def _process_energy(self, watts: float, location: str) -> List[ActuatorCommand]:
+        commands = []
+        rules = self.rules.get('energy', {})
+        if not rules:
+            return commands
+        if watts >= rules['critical_threshold']:
+            commands.append(ActuatorCommand(
+                actuator_id='smart_plug',
+                actuator_type='switch',
+                state='off',
+                reason=f'Critical energy draw {watts}W at {location}'
+            ))
+        elif watts >= rules['high_threshold']:
+            commands.append(ActuatorCommand(
+                actuator_id='smart_plug',
+                actuator_type='switch',
+                state='off',
+                reason=f'High energy draw {watts}W at {location}'
+            ))
+        return commands
+
+    def _process_uv(self, uv: float, location: str) -> List[ActuatorCommand]:
+        commands = []
+        rules = self.rules.get('uv', {})
+        if not rules:
+            return commands
+        if uv >= rules['high_threshold']:
+            commands.append(ActuatorCommand(
+                actuator_id='rain_shutter',
+                actuator_type='shutter',
+                state='closed',
+                reason=f'High UV index {uv} at {location}'
+            ))
+        return commands
+
+    def _process_rain(self, rain: int, location: str) -> List[ActuatorCommand]:
+        commands = []
+        if rain == 1:
+            commands.append(ActuatorCommand(
+                actuator_id='rain_shutter',
+                actuator_type='shutter',
+                state='closed',
+                reason=f'Rain detected at {location}'
+            ))
+        return commands
+
+    def _process_glass_break(self, detected: int, location: str) -> List[ActuatorCommand]:
+        commands = []
+        if detected == 1 and self._can_send_alert('glass_break'):
+            commands.append(ActuatorCommand(
+                actuator_id='siren',
+                actuator_type='alarm',
+                state='on',
+                reason=f'Glass break detected at {location}'
+            ))
+        return commands
+
+    def _process_pressure_mat(self, present: int, location: str) -> List[ActuatorCommand]:
+        commands = []
+        if present == 1 and location == 'entrance':
+            commands.append(ActuatorCommand(
+                actuator_id='entrance_lights',
+                actuator_type='light',
+                state='on',
+                reason='Presence detected on pressure mat'
+            ))
         return commands
     
     def _cross_sensor_decisions(

@@ -264,6 +264,114 @@ class SignalStrengthSensor(BaseSensor):
         
         return round(self.base_strength, 1)
 
+class SoundSensor(BaseSensor):
+    """Sound level sensor"""
+    
+    def __init__(self, location: str):
+        super().__init__('sound', location, 'dB')
+        self.base_db = random.uniform(30, 60)
+    
+    def _generate_value(self):
+        ranges = Config.get_sensor_ranges()['sound']
+        change = random.uniform(-5, 8)
+        # occasional spikes
+        if random.random() < 0.05:
+            self.base_db += random.uniform(15, 30)
+        else:
+            self.base_db += change
+        self.base_db = max(ranges['min'], min(ranges['max'], self.base_db))
+        return round(self.base_db, 1)
+
+class VibrationSensor(BaseSensor):
+    """Vibration sensor"""
+    
+    def __init__(self, location: str):
+        super().__init__('vibration', location, 'g')
+        self.base_vib = random.uniform(0, 0.2)
+    
+    def _generate_value(self):
+        ranges = Config.get_sensor_ranges()['vibration']
+        if random.random() < 0.1:
+            self.base_vib = random.uniform(0.4, 0.8)
+        else:
+            self.base_vib += random.uniform(-0.05, 0.05)
+        self.base_vib = max(ranges['min'], min(ranges['max'], self.base_vib))
+        return round(self.base_vib, 3)
+
+class EnergySensor(BaseSensor):
+    """Energy/current sensor"""
+    
+    def __init__(self, location: str):
+        super().__init__('energy', location, 'W')
+        self.base_watts = random.uniform(200, 800)
+    
+    def _generate_value(self):
+        ranges = Config.get_sensor_ranges()['energy']
+        if random.random() < 0.05:
+            self.base_watts += random.uniform(300, 800)
+        else:
+            self.base_watts += random.uniform(-50, 50)
+        self.base_watts = max(ranges['min'], min(ranges['max'], self.base_watts))
+        return round(self.base_watts, 1)
+
+class UVSensor(BaseSensor):
+    """UV intensity sensor"""
+    
+    def __init__(self, location: str):
+        super().__init__('uv', location, 'uv_index')
+        self.base_uv = random.uniform(0, 6)
+    
+    def _generate_value(self):
+        ranges = Config.get_sensor_ranges()['uv']
+        self.base_uv += random.uniform(-0.5, 0.5)
+        self.base_uv = max(ranges['min'], min(ranges['max'], self.base_uv))
+        return round(self.base_uv, 1)
+
+class RainSensor(BaseSensor):
+    """Rain detector"""
+    
+    def __init__(self, location: str):
+        super().__init__('rain', location, 'boolean')
+        self.state = 0
+    
+    def _generate_value(self):
+        # 10% chance of rain toggling
+        if random.random() < 0.1:
+            self.state = 1
+        else:
+            # decay back to 0
+            if random.random() < 0.3:
+                self.state = 0
+        return self.state
+
+class GlassBreakSensor(BaseSensor):
+    """Glass break detector"""
+    
+    def __init__(self, location: str):
+        super().__init__('glass_break', location, 'boolean')
+        self.state = 0
+    
+    def _generate_value(self):
+        # rare event
+        self.state = 1 if random.random() < 0.01 else 0
+        return self.state
+
+class PressureMatSensor(BaseSensor):
+    """Pressure mat presence sensor"""
+    
+    def __init__(self, location: str):
+        super().__init__('pressure_mat', location, 'boolean')
+        self.state = 0
+    
+    def _generate_value(self):
+        # occupancy toggle
+        if random.random() < 0.2:
+            self.state = 1
+        else:
+            if random.random() < 0.3:
+                self.state = 0
+        return self.state
+
 class ObjectDetectionSensor(BaseSensor):
     """Object detection (camera-based)"""
     
@@ -302,7 +410,15 @@ class SensorDevice:
             'water_leak': WaterLeakSensor,
             'rfid': RFIDSensor,
             'signal_strength': SignalStrengthSensor,
-            'object_detection': ObjectDetectionSensor
+            'object_detection': ObjectDetectionSensor,
+            'sound': SoundSensor,
+            'vibration': VibrationSensor,
+            'energy': EnergySensor,
+            'uv': UVSensor,
+            'rain': RainSensor,
+            'glass_break': GlassBreakSensor,
+            'pressure_mat': PressureMatSensor,
+            # 'camera': CameraSensor  # not implemented; placeholder removed to avoid NameError
         }
         
         for sensor_type in sensor_types:

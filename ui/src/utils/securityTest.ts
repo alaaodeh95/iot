@@ -2,8 +2,19 @@
  * UI Security Test Script
  * Tests the frontend security configuration and connection
  */
+import { io } from 'socket.io-client';
 
 // This script can be run in the browser console to test security features
+
+declare global {
+  interface Window {
+    testUISecurity?: () => Promise<void>;
+    securityService?: any;
+  }
+}
+
+const getErrorMessage = (error: unknown) =>
+  error instanceof Error ? error.message : String(error);
 
 async function testUISecurity() {
   console.log('🔍 Testing UI Security Configuration...');
@@ -34,7 +45,7 @@ async function testUISecurity() {
       console.log('   ❌ API connection failed:', response.status, response.statusText);
     }
   } catch (error) {
-    console.log('   ❌ API connection error:', error.message);
+    console.log('   ❌ API connection error:', getErrorMessage(error));
   }
   
   // Test 3: Check security service
@@ -48,7 +59,7 @@ async function testUISecurity() {
       console.log('   ❌ Security service not available');
     }
   } catch (error) {
-    console.log('   ❌ Security service error:', error.message);
+    console.log('   ❌ Security service error:', getErrorMessage(error));
   }
   
   // Test 4: Check WebSocket connection
@@ -66,10 +77,10 @@ async function testUISecurity() {
     });
     
     socket.on('connect_error', (error) => {
-      console.log('   ❌ WebSocket connection error:', error.message);
+      console.log('   ❌ WebSocket connection error:', getErrorMessage(error));
     });
   } catch (error) {
-    console.log('   ❌ WebSocket setup error:', error.message);
+    console.log('   ❌ WebSocket setup error:', getErrorMessage(error));
   }
   
   console.log('\n🔒 Security test completed!');

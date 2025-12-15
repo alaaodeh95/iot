@@ -243,6 +243,69 @@ class DatabaseManager:
             'timestamp': now
         }
     
+    def get_sensor_aggregate_summary(self, hours: int = 24) -> Dict[str, Any]:
+        """Aggregate statistics per sensor_type over the last N hours"""
+        cutoff_time = datetime.utcnow() - timedelta(hours=hours)
+        pipeline = [
+            {"$match": {"timestamp": {"$gte": cutoff_time}}},
+            {"$unwind": "$readings"},
+            {"$group": {
+                "_id": "$readings.sensor_type",
+                "count": {"$sum": 1},
+                "avg": {"$avg": "$readings.value"},
+                "min": {"$min": "$readings.value"},
+                "max": {"$max": "$readings.value"}
+            }},
+            {"$project": {
+                "sensor_type": "$_id",
+                "count": 1,
+                "avg": 1,
+                "min": 1,
+                "max": 1,
+                "_id": 0
+            }}
+        ]
+        return list(self.sensor_readings.aggregate(pipeline))
+
+    def get_actuator_usage(self, hours: int = 24) -> List[Dict[str, Any]]:
+        """Usage frequency per actuator over the last N hours"""
+        cutoff_time = datetime.utcnow() - timedelta(hours=hours)
+        pipeline = [
+            {"$match": {"timestamp": {"$gte": cutoff_time}}},
+            {"$group": {
+                "_id": "$actuator_id",
+                "count": {"$sum": 1},
+                "states": {"$addToSet": "$state"}
+            }},
+            {"$project": {
+                "actuator_id": "$_id",
+                "count": 1,
+                "states": 1,
+                "_id": 0
+            }}
+        ]
+        return list(self.actuator_commands.aggregate(pipeline))
+
+    def get_decision_summary(self, hours: int = 24) -> Dict[str, Any]:
+        """Decision volume summary"""
+        cutoff_time = datetime.utcnow() - timedelta(hours=hours)
+        total = self.decision_logs.count_documents({})
+        recent = self.decision_logs.count_documents({"timestamp": {"$gte": cutoff_time}})
+        return {"total": total, "last_hours": recent}
+
+    def get_recent_gateway_logs(self, limit: int = 50) -> List[Dict[str, Any]]:
+        """Fetch recent gateway logs"""
+        logs = list(
+            self.gateway_logs.find()
+            .sort('timestamp', DESCENDING)
+            .limit(limit)
+        )
+        for log in logs:
+            if 'timestamp' in log:
+                log['timestamp'] = log['timestamp'].isoformat()
+            log['_id'] = str(log['_id'])
+        return logs
+
     def close(self):
         """Close database connection"""
         self.client.close()
