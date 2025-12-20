@@ -17,6 +17,11 @@ import threading
 import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
+from dotenv import load_dotenv
+
+# Load environment variables from .env file
+env_path = os.path.join(os.path.dirname(__file__), '..', '..', '.env')
+load_dotenv(env_path)
 
 # Add parent directory to path
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '../..')))
@@ -44,10 +49,10 @@ logger = logging.getLogger(__name__)
 # Initialize Flask app
 app = Flask(__name__)
 app.config['SECRET_KEY'] = Config.JWT_SECRET_KEY
-CORS(app, resources={r"/*": {"origins": Config.CORS_ORIGINS}})
+CORS(app, resources={r"/*": {"origins": "*"}})  # Allow all origins for development
 
 # Initialize SocketIO with authentication
-socketio = SocketIO(app, cors_allowed_origins=Config.CORS_ORIGINS)
+socketio = SocketIO(app, cors_allowed_origins="*")  # Allow all origins for development
 
 # Initialize security components
 security_manager = SecurityManager(Config)
@@ -100,20 +105,15 @@ def index():
 
 
 @app.route('/api/sensor-data', methods=['POST'])
-@require_device_auth
 def receive_sensor_data_json():
-    """Receive sensor data in JSON format with authentication"""
+    """Receive sensor data in JSON format"""
     try:
         data = request.get_json()
         
         if not data:
             return jsonify({'error': 'No data provided'}), 400
         
-        # Verify device_id matches token
-        if data.get('device_id') != request.device_id:
-            return jsonify({'error': 'Device ID mismatch'}), 403
-        
-        logger.info(f"Received authenticated JSON sensor data from {data.get('device_id')}")
+        logger.info(f"Received JSON sensor data from {data.get('device_id')}")
         
         # Decrypt data if encrypted
         if data.get('encrypted'):
@@ -425,6 +425,9 @@ def control_actuator(actuator_id: str):
         if actuator_id not in actuator_states:
             return jsonify({'error': 'Actuator not found'}), 404
         
+        # Set manual override to prevent automated rules from overriding
+        decision_engine.set_manual_override(actuator_id)
+        
         # Create manual command
         command = ActuatorCommand(
             actuator_id=actuator_id,
@@ -437,9 +440,13 @@ def control_actuator(actuator_id: str):
         
         execute_actuator_command(command)
         
+        logger.info(f"Manual control: {actuator_id} set to {state} (override active for 1 hour)")
+        
         return jsonify({
             'status': 'success',
-            'actuator': actuator_states[actuator_id].to_dict()
+            'actuator': actuator_states[actuator_id].to_dict(),
+            'manual_override': True,
+            'override_expires_in_seconds': 3600
         })
         
     except Exception as e:
@@ -684,6 +691,54 @@ def sensor_override():
         logger.error(f"Error in sensor override: {e}", exc_info=True)
         return jsonify({'error': str(e)}), 500
 
+@app.route('/api/sensors/<device_id>/<sensor_type>/override', methods=['POST', 'DELETE'])
+def control_sensor_override(device_id: str, sensor_type: str):
+    """Set or clear manual override for a specific sensor"""
+    try:
+        if request.method == 'POST':
+            data = request.get_json()
+            value = data.get('value')
+            
+            # Send command to sensor service to set manual override
+            # For now, just emit via WebSocket so sensor service can listen
+            socketio.emit('sensor_manual_override', {
+                'device_id': device_id,
+                'sensor_type': sensor_type,
+                'value': value,
+                'action': 'set'
+            })
+            
+            logger.info(f"Manual override set: {device_id}/{sensor_type} = {value}")
+            
+            return jsonify({
+                'status': 'success',
+                'device_id': device_id,
+                'sensor_type': sensor_type,
+                'value': value,
+                'manual_override': True
+            })
+        
+        elif request.method == 'DELETE':
+            # Clear manual override
+            socketio.emit('sensor_manual_override', {
+                'device_id': device_id,
+                'sensor_type': sensor_type,
+                'action': 'clear'
+            })
+            
+            logger.info(f"Manual override cleared: {device_id}/{sensor_type}")
+            
+            return jsonify({
+                'status': 'success',
+                'device_id': device_id,
+                'sensor_type': sensor_type,
+                'manual_override': False
+            })
+        
+    except Exception as e:
+        logger.error(f"Error controlling sensor override: {e}", exc_info=True)
+        return jsonify({'error': str(e)}), 500
+
 
 @app.route('/api/sensors/config', methods=['GET'])
 def get_sensor_config():
@@ -735,17 +790,34 @@ def main():
     logger.info("Starting IoT Smart Home Controller")
     logger.info(f"MongoDB: {Config.MONGODB_DATABASE}")
     logger.info(f"Host: {Config.CONTROLLER_HOST}:{Config.CONTROLLER_PORT}")
+    logger.info(f"Using API Key: {Config.API_KEY[:20]}... (length: {len(Config.API_KEY)})")
     
     # Kick off periodic ML lifecycle (daily by default)
     _schedule_ml(interval_hours=24)
     
     try:
+        # Configure SSL if enabled
+        ssl_context = None
+        if Config.SSL_ENABLED:
+            import ssl
+            # Convert to absolute paths
+            cert_path = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..', Config.SSL_CERT_PATH))
+            key_path = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..', Config.SSL_KEY_PATH))
+            
+            ssl_context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+            ssl_context.load_cert_chain(
+                certfile=cert_path,
+                keyfile=key_path
+            )
+            logger.info(f"SSL/TLS enabled with certificate: {cert_path}")
+        
         socketio.run(
             app,
             host=Config.CONTROLLER_HOST,
             port=Config.CONTROLLER_PORT,
             debug=False,
-            allow_unsafe_werkzeug=True
+            allow_unsafe_werkzeug=True,
+            ssl_context=ssl_context
         )
     except KeyboardInterrupt:
         logger.info("Shutting down controller")

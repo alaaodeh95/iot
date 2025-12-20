@@ -13,6 +13,15 @@ from xml.dom import minidom
 import sys
 import os
 import random
+from dotenv import load_dotenv
+import urllib3
+
+# Disable SSL warnings for self-signed certificates
+urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
+
+# Load environment variables from .env file
+env_path = os.path.join(os.path.dirname(__file__), '..', '.env')
+load_dotenv(env_path)
 
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
@@ -57,6 +66,7 @@ class SensorService:
         self._authenticate_devices()
         
         logger.info(f"Secure sensor service initialized with {len(self.devices)} devices")
+        logger.info(f"Using API Key: {Config.API_KEY[:20]}... (length: {len(Config.API_KEY)})")
     
     def _initialize_devices(self):
         """Initialize all sensor devices from configuration"""
@@ -194,7 +204,7 @@ class SensorService:
                 json={'device_id': device_id},
                 headers=headers,
                 timeout=10,
-                verify=True if Config.SSL_ENABLED else False
+                verify=False  # Disable SSL verification for self-signed certificates
             )
             
             if response.status_code == 200:
@@ -266,7 +276,7 @@ class SensorService:
                     json=secure_data,
                     headers=headers,
                     timeout=10,
-                    verify=True if Config.SSL_ENABLED else False
+                    verify=False  # Disable SSL verification for self-signed certificates
                 )
                 
                 if response.status_code == 200:
@@ -316,7 +326,8 @@ class SensorService:
                 f"{self.controller_url}/api/sensor-data/xml",
                 data=xml_str.encode('utf-8'),
                 headers={'Content-Type': 'application/xml'},
-                timeout=5
+                timeout=5,
+                verify=False  # Disable SSL verification for self-signed certificates
             )
             
             if response.status_code == 200:
@@ -392,6 +403,69 @@ class SensorService:
         """Get gateway statistics"""
         return self.gateway.get_statistics()
 
+def create_flask_api(service: SensorService):
+    """Create Flask API for sensor service control"""
+    from flask import Flask, request, jsonify
+    from flask_cors import CORS
+    
+    app = Flask(__name__)
+    CORS(app)
+    
+    @app.route('/api/sensor/<device_id>/<sensor_type>/override', methods=['POST'])
+    def set_sensor_override(device_id: str, sensor_type: str):
+        """Set manual override for a sensor and immediately send data"""
+        try:
+            data = request.get_json()
+            value = data.get('value')
+            
+            if service.set_sensor_value(device_id, sensor_type, value):
+                logger.info(f"Manual override set: {device_id}/{sensor_type} = {value}")
+                
+                # Immediately send sensor data to trigger automation
+                device = service.get_device(device_id)
+                if device:
+                    sensor_data = device.read_all()
+                    config = Config.SENSORS.get(device_id, {})
+                    use_gateway = config.get('gateway_enabled', False)
+                    
+                    if config.get('type') == 'json':
+                        service._send_json_data(sensor_data, use_gateway)
+                    elif config.get('type') == 'xml':
+                        service._send_xml_data(sensor_data)
+                
+                return jsonify({
+                    'status': 'success',
+                    'device_id': device_id,
+                    'sensor_type': sensor_type,
+                    'value': value,
+                    'immediate_send': True
+                })
+            else:
+                return jsonify({'error': 'Sensor not found'}), 404
+        except Exception as e:
+            logger.error(f"Error setting override: {e}", exc_info=True)
+            return jsonify({'error': str(e)}), 500
+    
+    @app.route('/api/sensor/<device_id>/<sensor_type>/override', methods=['DELETE'])
+    def clear_sensor_override(device_id: str, sensor_type: str):
+        """Clear manual override for a sensor"""
+        try:
+            device = service.get_device(device_id)
+            if device and device.clear_sensor_override(sensor_type):
+                logger.info(f"Manual override cleared: {device_id}/{sensor_type}")
+                return jsonify({
+                    'status': 'success',
+                    'device_id': device_id,
+                    'sensor_type': sensor_type
+                })
+            else:
+                return jsonify({'error': 'Sensor not found'}), 404
+        except Exception as e:
+            logger.error(f"Error clearing override: {e}", exc_info=True)
+            return jsonify({'error': str(e)}), 500
+    
+    return app
+
 def main():
     """Main entry point"""
     logger.info("="*60)
@@ -400,9 +474,19 @@ def main():
     logger.info(f"Controller URL: http://{Config.CONTROLLER_HOST}:{Config.CONTROLLER_PORT}")
     logger.info(f"Simulation Mode: {'Continuous' if Config.CONTINUOUS_MODE else f'{Config.FIXED_CYCLES} cycles'}")
     logger.info(f"Gateway Enabled: {Config.OUTLIER_DETECTION['enabled']}")
+    logger.info(f"Sensor API: http://localhost:{Config.SENSOR_SERVICE_PORT}")
     logger.info("="*60)
     
     service = SensorService()
+    
+    # Start Flask API in background thread
+    app = create_flask_api(service)
+    import threading
+    api_thread = threading.Thread(
+        target=lambda: app.run(host='0.0.0.0', port=Config.SENSOR_SERVICE_PORT, debug=False),
+        daemon=True
+    )
+    api_thread.start()
     
     try:
         service.start()

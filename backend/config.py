@@ -99,7 +99,7 @@ class Config:
             'location': 'roof',
             'sensors': ['temperature', 'humidity', 'pressure'],
             'update_interval': 2.0,
-            'gateway_enabled': True
+            'gateway_enabled': False  # Disabled to allow manual overrides
         },
         'living_room': {
             'type': 'json',

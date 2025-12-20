@@ -126,7 +126,7 @@ export const apiService = {
   },
 
   /**
-   * Override sensor value (for testing)
+   * Override sensor value (for testing) - calls sensor service directly
    */
   overrideSensorValue: async (
     deviceId: string,
@@ -134,17 +134,19 @@ export const apiService = {
     sensorType: string,
     value: number | string
   ): Promise<any> => {
-    const response = await api.post('/api/sensor-override', {
-      device_id: deviceId,
-      location: location,
-      readings: [
-        {
-          sensor_type: sensorType,
-          value: value,
-          unit: ''
-        }
-      ]
-    });
+    // Special value -999 means clear the override
+    if (value === -999) {
+      const response = await axios.delete(
+        `http://localhost:5001/api/sensor/${deviceId}/${sensorType}/override`
+      );
+      return response.data;
+    }
+    
+    // Set the manual override in the sensor service
+    const response = await axios.post(
+      `http://localhost:5001/api/sensor/${deviceId}/${sensorType}/override`,
+      { value }
+    );
     return response.data;
   },
 

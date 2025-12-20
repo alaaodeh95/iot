@@ -22,6 +22,8 @@ class DecisionEngine:
         self.last_motion_time = {}
         self.actuator_states = {}
         self.alert_cooldown = {}  # Prevent alert spam
+        self.manual_override = {}  # Track manually controlled actuators
+        self.manual_override_timeout = 3600  # 1 hour in seconds
         
     def process_sensor_data(self, sensor_data: Dict[str, Any]) -> List[ActuatorCommand]:
         """
@@ -38,6 +40,9 @@ class DecisionEngine:
         # Store in history for trend analysis
         self._update_history(device_id, readings)
         
+        # Collect all temperature readings (don't process individually)
+        temp_readings = []
+        
         # Process each reading
         for reading in readings:
             sensor_type = reading.get('sensor_type')
@@ -45,7 +50,8 @@ class DecisionEngine:
             
             # Route to appropriate decision logic
             if sensor_type == 'temperature':
-                commands.extend(self._process_temperature(value, location))
+                # Collect temperature readings instead of processing immediately
+                temp_readings.append({'value': value, 'location': location})
             elif sensor_type == 'humidity':
                 commands.extend(self._process_humidity(value, location))
             elif sensor_type == 'light':
@@ -79,15 +85,26 @@ class DecisionEngine:
             elif sensor_type == 'pressure_mat':
                 commands.extend(self._process_pressure_mat(value, location))
         
+        # Process aggregated temperature readings (after collecting from all sensors)
+        if temp_readings:
+            # Get all recent temperature readings from history across all locations
+            all_temps = self._get_all_recent_temperatures()
+            # Make a single HVAC decision based on aggregated data
+            commands.extend(self._process_aggregated_temperature(all_temps))
+        
         # Cross-sensor intelligence (combine multiple sensor inputs)
         commands.extend(self._cross_sensor_decisions(device_id, location, readings))
         
         return commands
     
     def _process_temperature(self, temp: float, location: str) -> List[ActuatorCommand]:
-        """Process temperature readings"""
+        """Process temperature readings with hysteresis to prevent oscillation"""
         commands = []
         rules = self.rules['temperature']
+        current_state = self.actuator_states.get('hvac_system', 'off')
+        
+        # Hysteresis buffer (deadband) in degrees
+        HYSTERESIS = 2.0
         
         # Critical high temperature
         if temp >= rules['critical_high']:
@@ -104,34 +121,43 @@ class DecisionEngine:
                 reason=f'Temperature critically high: {temp}°C'
             ))
         
-        # High temperature - turn on cooling
+        # High temperature - turn on cooling (only if not already cooling)
         elif temp > rules['high_threshold']:
-            commands.append(ActuatorCommand(
-                actuator_id='hvac_system',
-                actuator_type='climate_control',
-                state='cooling',
-                reason=f'High temperature: {temp}°C at {location}'
-            ))
-        
-        # Low temperature - turn on heating
-        elif temp < rules['low_threshold']:
-            commands.append(ActuatorCommand(
-                actuator_id='hvac_system',
-                actuator_type='climate_control',
-                state='heating',
-                reason=f'Low temperature: {temp}°C at {location}'
-            ))
-        
-        # Comfortable temperature - fan only or off
-        elif rules['low_threshold'] <= temp <= rules['high_threshold']:
-            current_state = self.actuator_states.get('hvac_system', 'off')
-            if current_state in ['heating', 'cooling']:
+            if current_state != 'cooling':
                 commands.append(ActuatorCommand(
                     actuator_id='hvac_system',
                     actuator_type='climate_control',
-                    state='off',
-                    reason=f'Temperature normalized: {temp}°C at {location}'
+                    state='cooling',
+                    reason=f'High temperature: {temp}°C at {location}'
                 ))
+        
+        # Temperature dropped below (high_threshold - hysteresis) - turn off cooling
+        elif temp <= (rules['high_threshold'] - HYSTERESIS) and current_state == 'cooling':
+            commands.append(ActuatorCommand(
+                actuator_id='hvac_system',
+                actuator_type='climate_control',
+                state='off',
+                reason=f'Temperature cooled to {temp}°C at {location}'
+            ))
+        
+        # Low temperature - turn on heating (only if not already heating)
+        elif temp < rules['low_threshold']:
+            if current_state != 'heating':
+                commands.append(ActuatorCommand(
+                    actuator_id='hvac_system',
+                    actuator_type='climate_control',
+                    state='heating',
+                    reason=f'Low temperature: {temp}°C at {location}'
+                ))
+        
+        # Temperature rose above (low_threshold + hysteresis) - turn off heating
+        elif temp >= (rules['low_threshold'] + HYSTERESIS) and current_state == 'heating':
+            commands.append(ActuatorCommand(
+                actuator_id='hvac_system',
+                actuator_type='climate_control',
+                state='off',
+                reason=f'Temperature warmed to {temp}°C at {location}'
+            ))
         
         return commands
     
@@ -174,19 +200,24 @@ class DecisionEngine:
         commands = []
         rules = self.rules['light']
         
-        # Only auto-control if there's recent motion
+        # Check for recent motion (but allow automation without motion too)
         has_recent_motion = self._has_recent_motion(location)
         
-        if light_level < rules['dark_threshold'] and has_recent_motion:
-            # Dark and motion detected - turn on lights
+        if light_level < rules['dark_threshold']:
+            # Dark - turn on lights (prioritize motion, but work without it too)
             light_id = f'{location}_lights'
             if light_id in Config.ACTUATORS:
+                reason = f'Dark environment: {light_level} lux'
+                if has_recent_motion:
+                    reason += ' with motion'
+                reason += f' at {location}'
+                
                 commands.append(ActuatorCommand(
                     actuator_id=light_id,
                     actuator_type='light',
                     state='on',
                     value=80,  # 80% brightness
-                    reason=f'Dark environment: {light_level} lux with motion at {location}'
+                    reason=reason
                 ))
         
         elif light_level > rules['bright_threshold']:
@@ -270,21 +301,21 @@ class DecisionEngine:
         rules = self.rules['gas']
         
         if gas_level > rules['critical_threshold']:
-            # Critical gas level - sound alarm
-            if self._can_send_alert('gas_alarm'):
+            # Critical gas level - sound alarm (no cooldown for safety)
+            current_alarm_state = self.actuator_states.get('gas_alarm', 'off')
+            if current_alarm_state != 'on':
                 commands.append(ActuatorCommand(
                     actuator_id='gas_alarm',
                     actuator_type='alarm',
                     state='on',
                     reason=f'Critical gas level: {gas_level} ppm at {location}'
                 ))
-                commands.append(ActuatorCommand(
-                    actuator_id='kitchen_exhaust',
-                    actuator_type='fan',
-                    state='high',
-                    reason=f'Emergency ventilation for gas: {gas_level} ppm'
-                ))
-        
+            commands.append(ActuatorCommand(
+                actuator_id='kitchen_exhaust',
+                actuator_type='fan',
+                state='high',
+                reason=f'Emergency ventilation for gas: {gas_level} ppm'
+            ))
         elif gas_level > rules['warning_threshold']:
             # Warning level
             commands.append(ActuatorCommand(
@@ -293,6 +324,26 @@ class DecisionEngine:
                 state='medium',
                 reason=f'Elevated gas level: {gas_level} ppm at {location}'
             ))
+        else:
+            # Normal gas level - turn off alarm and exhaust
+            current_alarm_state = self.actuator_states.get('gas_alarm', 'off')
+            current_exhaust_state = self.actuator_states.get('kitchen_exhaust', 'off')
+            
+            if current_alarm_state == 'on':
+                commands.append(ActuatorCommand(
+                    actuator_id='gas_alarm',
+                    actuator_type='alarm',
+                    state='off',
+                    reason=f'Gas level normalized: {gas_level} ppm at {location}'
+                ))
+            
+            if current_exhaust_state != 'off':
+                commands.append(ActuatorCommand(
+                    actuator_id='kitchen_exhaust',
+                    actuator_type='fan',
+                    state='off',
+                    reason=f'Gas level normalized: {gas_level} ppm at {location}'
+                ))
         
         return commands
     
@@ -348,14 +399,26 @@ class DecisionEngine:
         """Process water leak sensor readings"""
         commands = []
         
-        if leak == 1 and self._can_send_alert('water_leak'):
-            # Water leak detected - shut off water
-            commands.append(ActuatorCommand(
-                actuator_id='water_shutoff',
-                actuator_type='valve',
-                state='off',
-                reason=f'Water leak detected at {location}'
-            ))
+        if leak == 1:
+            # Water leak detected - shut off water (no cooldown for safety)
+            current_state = self.actuator_states.get('water_shutoff', 'on')
+            if current_state != 'off':
+                commands.append(ActuatorCommand(
+                    actuator_id='water_shutoff',
+                    actuator_type='valve',
+                    state='off',
+                    reason=f'Water leak detected at {location}'
+                ))
+        elif leak == 0:
+            # No leak - turn water back on if it was off
+            current_state = self.actuator_states.get('water_shutoff', 'on')
+            if current_state == 'off':
+                commands.append(ActuatorCommand(
+                    actuator_id='water_shutoff',
+                    actuator_type='valve',
+                    state='on',
+                    reason=f'Water leak cleared at {location}'
+                ))
         
         return commands
     
@@ -471,6 +534,154 @@ class DecisionEngine:
                 state='on',
                 reason='Presence detected on pressure mat'
             ))
+        return commands
+    
+    def _get_all_recent_temperatures(self) -> List[Dict[str, Any]]:
+        """Get all recent temperature readings from all locations"""
+        temps = []
+        cutoff_time = datetime.utcnow() - timedelta(minutes=5)  # Last 5 minutes
+        
+        for key, history in self.sensor_history.items():
+            if '_temperature' in key and history:
+                # Get the most recent reading
+                recent = history[-1]
+                if recent['timestamp'] >= cutoff_time:
+                    location = key.split('_temperature')[0]
+                    temps.append({
+                        'location': location,
+                        'value': recent['value'],
+                        'timestamp': recent['timestamp']
+                    })
+        
+        return temps
+    
+    def set_manual_override(self, actuator_id: str):
+        """Mark an actuator as manually controlled"""
+        self.manual_override[actuator_id] = datetime.utcnow()
+        logger.info(f"Manual override enabled for {actuator_id}")
+    
+    def clear_manual_override(self, actuator_id: str):
+        """Clear manual override for an actuator"""
+        if actuator_id in self.manual_override:
+            del self.manual_override[actuator_id]
+            logger.info(f"Manual override cleared for {actuator_id}")
+    
+    def is_manually_overridden(self, actuator_id: str) -> bool:
+        """Check if actuator is currently under manual control"""
+        if actuator_id not in self.manual_override:
+            return False
+        
+        # Check if override has expired
+        time_since_override = (datetime.utcnow() - self.manual_override[actuator_id]).total_seconds()
+        if time_since_override > self.manual_override_timeout:
+            # Override expired, clear it
+            del self.manual_override[actuator_id]
+            logger.info(f"Manual override expired for {actuator_id}")
+            return False
+        
+        return True
+    
+    def _process_aggregated_temperature(self, all_temps: List[Dict[str, Any]]) -> List[ActuatorCommand]:
+        """
+        Process all temperature readings together to make a single HVAC decision
+        Uses weighted average based on location importance
+        """
+        commands = []
+        
+        if not all_temps:
+            return commands
+        
+        # Check if HVAC is manually controlled
+        if self.is_manually_overridden('hvac_system'):
+            logger.debug("HVAC system is manually controlled, skipping automated control")
+            return commands
+        
+        rules = self.rules['temperature']
+        current_state = self.actuator_states.get('hvac_system', 'off')
+        HYSTERESIS = 2.0
+        
+        # Location weights (living areas more important than utility)
+        LOCATION_WEIGHTS = {
+            'living_room': 1.5,
+            'bedroom': 1.5,
+            'kitchen': 1.0,
+            'roof': 0.5,
+            'basement': 0.3
+        }
+        
+        # Calculate weighted average temperature
+        total_weight = 0
+        weighted_sum = 0
+        max_temp = -999
+        min_temp = 999
+        
+        for temp_data in all_temps:
+            location = temp_data['location']
+            value = temp_data['value']
+            weight = LOCATION_WEIGHTS.get(location, 1.0)
+            
+            weighted_sum += value * weight
+            total_weight += weight
+            max_temp = max(max_temp, value)
+            min_temp = min(min_temp, value)
+        
+        avg_temp = weighted_sum / total_weight if total_weight > 0 else 0
+        
+        logger.info(f"Temperature aggregation: avg={avg_temp:.1f}°C, max={max_temp:.1f}°C, min={min_temp:.1f}°C, locations={len(all_temps)}")
+        
+        # Critical high temperature (use max temp for safety)
+        if max_temp >= rules['critical_high']:
+            commands.append(ActuatorCommand(
+                actuator_id='hvac_system',
+                actuator_type='climate_control',
+                state='cooling',
+                reason=f'Critical temperature detected: max={max_temp:.1f}°C across {len(all_temps)} locations'
+            ))
+            commands.append(ActuatorCommand(
+                actuator_id='fire_alarm',
+                actuator_type='alarm',
+                state='on',
+                reason=f'Temperature critically high: {max_temp:.1f}°C'
+            ))
+        
+        # High temperature - turn on cooling (use weighted average)
+        elif avg_temp > rules['high_threshold']:
+            if current_state != 'cooling':
+                commands.append(ActuatorCommand(
+                    actuator_id='hvac_system',
+                    actuator_type='climate_control',
+                    state='cooling',
+                    reason=f'High average temperature: {avg_temp:.1f}°C across {len(all_temps)} locations'
+                ))
+        
+        # Temperature dropped - turn off cooling (use weighted average with hysteresis)
+        elif avg_temp <= (rules['high_threshold'] - HYSTERESIS) and current_state == 'cooling':
+            commands.append(ActuatorCommand(
+                actuator_id='hvac_system',
+                actuator_type='climate_control',
+                state='off',
+                reason=f'Temperature normalized: avg={avg_temp:.1f}°C across {len(all_temps)} locations'
+            ))
+        
+        # Low temperature - turn on heating (use min temp for comfort)
+        elif min_temp < rules['low_threshold']:
+            if current_state != 'heating':
+                commands.append(ActuatorCommand(
+                    actuator_id='hvac_system',
+                    actuator_type='climate_control',
+                    state='heating',
+                    reason=f'Low temperature detected: min={min_temp:.1f}°C across {len(all_temps)} locations'
+                ))
+        
+        # Temperature rose - turn off heating (use weighted average with hysteresis)
+        elif avg_temp >= (rules['low_threshold'] + HYSTERESIS) and current_state == 'heating':
+            commands.append(ActuatorCommand(
+                actuator_id='hvac_system',
+                actuator_type='climate_control',
+                state='off',
+                reason=f'Temperature normalized: avg={avg_temp:.1f}°C across {len(all_temps)} locations'
+            ))
+        
         return commands
     
     def _cross_sensor_decisions(

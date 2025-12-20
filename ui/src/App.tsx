@@ -35,7 +35,8 @@ import {
   Analytics as AnalyticsIcon,
   Timeline as TimelineIcon,
   Download as DownloadIcon,
-  Refresh as RefreshIcon
+  Refresh as RefreshIcon,
+  Info as InfoIcon
 } from '@mui/icons-material';
 import {
   ResponsiveContainer,
@@ -50,6 +51,7 @@ import {
 import SensorCard from './components/SensorCard';
 import SecurityStatus from './components/SecurityStatus';
 import ActuatorCard from './components/ActuatorCard';
+import SystemInfo from './components/SystemInfo';
 import { socketService } from './services/socket';
 import { apiService } from './services/api';
 import { securityService } from './services/security';
@@ -326,6 +328,7 @@ function App() {
             <Tab icon={<DashboardIcon />} label="Dashboard" />
             <Tab icon={<SecurityIcon />} label="Security" />
             <Tab icon={<AnalyticsIcon />} label="Analytics" />
+            <Tab icon={<InfoIcon />} label="System Info" />
           </Tabs>
         </Paper>
 
@@ -354,54 +357,109 @@ function App() {
           {/* Dashboard Tab Content */}
           {currentTab === 0 && (
             <>
-              {/* Sensors Section */}
+              {/* Sensors Section - Grouped by Location */}
               <Paper elevation={3} sx={{ p: 3, mb: 4 }}>
                 <Typography variant="h5" gutterBottom sx={{ mb: 3 }}>
                   📊 Live Sensors
                 </Typography>
-                <Grid container spacing={3}>
-                  {Array.from(sensorData.values()).map(data =>
-                    data.readings.map((reading, idx) => (
-                      <Grid item xs={12} sm={6} md={4} lg={3} key={`${data.device_id}-${idx}`}>
-                        <SensorCard
-                          deviceId={data.device_id}
-                          location={data.location}
-                          reading={reading}
-                          format={data.format}
-                          onValueChange={(sensorType, value) =>
-                            handleSensorValueChange(data.device_id, data.location, sensorType, value)
-                          }
-                        />
-                      </Grid>
-                    ))
-                  )}
-                  {sensorData.size === 0 && (
-                    <Grid item xs={12}>
-                      <Alert severity="info">
-                        Waiting for sensor data... Please ensure the sensor service is running.
-                      </Alert>
-                    </Grid>
-                  )}
-                </Grid>
+                {sensorData.size === 0 ? (
+                  <Alert severity="info">
+                    Waiting for sensor data... Please ensure the sensor service is running.
+                  </Alert>
+                ) : (
+                  (() => {
+                    // Group sensors by location
+                    const sensorsByLocation = new Map<string, Array<{ data: SensorData; reading: any; idx: number }>>();
+                    
+                    Array.from(sensorData.values()).forEach(data => {
+                      if (!sensorsByLocation.has(data.location)) {
+                        sensorsByLocation.set(data.location, []);
+                      }
+                      data.readings.forEach((reading, idx) => {
+                        sensorsByLocation.get(data.location)!.push({ data, reading, idx });
+                      });
+                    });
+
+                    // Sort locations alphabetically
+                    const sortedLocations = Array.from(sensorsByLocation.keys()).sort();
+
+                    return (
+                      <Stack spacing={4}>
+                        {sortedLocations.map(location => (
+                          <Box key={location}>
+                            <Typography variant="h6" gutterBottom sx={{ mb: 2, color: 'primary.main' }}>
+                              📍 {location.charAt(0).toUpperCase() + location.slice(1).replace('_', ' ')}
+                            </Typography>
+                            <Grid container spacing={2}>
+                              {sensorsByLocation.get(location)!.map(({ data, reading, idx }) => (
+                                <Grid item xs={12} sm={6} md={4} lg={3} key={`${data.device_id}-${idx}`}>
+                                  <SensorCard
+                                    deviceId={data.device_id}
+                                    location={data.location}
+                                    reading={reading}
+                                    format={data.format}
+                                    onValueChange={(sensorType, value) =>
+                                      handleSensorValueChange(data.device_id, data.location, sensorType, value)
+                                    }
+                                  />
+                                </Grid>
+                              ))}
+                            </Grid>
+                          </Box>
+                        ))}
+                      </Stack>
+                    );
+                  })()
+                )}
               </Paper>
 
-              {/* Actuators Section */}
+              {/* Actuators Section - Grouped by Location */}
               <Paper elevation={3} sx={{ p: 3 }}>
                 <Typography variant="h5" gutterBottom sx={{ mb: 3 }}>
                   🎛️ Actuators
                 </Typography>
-                <Grid container spacing={3}>
-                  {actuators.map(actuator => (
-                    <Grid item xs={12} sm={6} md={4} lg={3} key={actuator.actuator_id}>
-                      <ActuatorCard actuator={actuator} onToggle={handleActuatorToggle} />
-                    </Grid>
-                  ))}
-                  {actuators.length === 0 && (
-                    <Grid item xs={12}>
-                      <Alert severity="info">Loading actuators...</Alert>
-                    </Grid>
-                  )}
-                </Grid>
+                {actuators.length === 0 ? (
+                  <Alert severity="info">Loading actuators...</Alert>
+                ) : (
+                  (() => {
+                    // Group actuators by location
+                    const actuatorsByLocation = new Map<string, ActuatorStatus[]>();
+                    
+                    actuators.forEach(actuator => {
+                      const location = actuator.location || 'system';
+                      if (!actuatorsByLocation.has(location)) {
+                        actuatorsByLocation.set(location, []);
+                      }
+                      actuatorsByLocation.get(location)!.push(actuator);
+                    });
+
+                    // Sort locations: whole_house/system first, then alphabetically
+                    const sortedLocations = Array.from(actuatorsByLocation.keys()).sort((a, b) => {
+                      if (a === 'whole_house' || a === 'system') return -1;
+                      if (b === 'whole_house' || b === 'system') return 1;
+                      return a.localeCompare(b);
+                    });
+
+                    return (
+                      <Stack spacing={4}>
+                        {sortedLocations.map(location => (
+                          <Box key={location}>
+                            <Typography variant="h6" gutterBottom sx={{ mb: 2, color: 'secondary.main' }}>
+                              🏠 {location === 'whole_house' ? 'Whole House' : location.charAt(0).toUpperCase() + location.slice(1).replace('_', ' ')}
+                            </Typography>
+                            <Grid container spacing={2}>
+                              {actuatorsByLocation.get(location)!.map(actuator => (
+                                <Grid item xs={12} sm={6} md={4} lg={3} key={actuator.actuator_id}>
+                                  <ActuatorCard actuator={actuator} onToggle={handleActuatorToggle} />
+                                </Grid>
+                              ))}
+                            </Grid>
+                          </Box>
+                        ))}
+                      </Stack>
+                    );
+                  })()
+                )}
               </Paper>
             </>
           )}
@@ -802,6 +860,11 @@ function App() {
                 </Stack>
               </Paper>
             </Stack>
+          )}
+
+          {/* System Info Tab Content */}
+          {currentTab === 3 && (
+            <SystemInfo />
           )}
 
           {/* Footer */}
